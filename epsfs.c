@@ -726,11 +726,12 @@ int eps_import(eps_fs_t *fs, uint32_t dir_block, const char *src_path,
  *
  * Layout:
  *   Block 0: Unused (zeros)
- *   Block 1: Device ID block
+ *   Block 1: Device ID block with "ID" and "OS" signatures
  *   Block 2: OS block + root directory start
- *   Blocks 3-4: Root directory continued
- *   Blocks 5-(5+fat_blocks-1): FAT
- *   Remaining: OS file data, then free space
+ *   Block 3: Root directory continuation
+ *   Block 4: Root directory continuation with "DR" signature
+ *   Blocks 5-(5+fat_blocks-1): FAT with "FB" signatures
+ *   Remaining: OS file data, subdirectories, then free space
  */
 int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
 {
@@ -746,40 +747,93 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     if (!fp) return -1;
 
     uint8_t block[EPS_BLOCK_SIZE];
+    uint8_t block3[EPS_BLOCK_SIZE];  /* For directory continuation */
     memset(block, 0, EPS_BLOCK_SIZE);
+    memset(block3, 0, EPS_BLOCK_SIZE);
 
     /* Block 0: Unused - just zeros */
     if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
 
     /* Block 1: Device ID block */
     memset(block, 0, EPS_BLOCK_SIZE);
+    /*
+     * Block 1 format (based on reference analysis):
+     * 0x00-0x03: 00 00 02 00 (format indicator)
+     * 0x0C: heads (0x02)
+     * 0x0E-0x11: total_blocks - 1, big-endian 32-bit
+     * 0x26-0x27: "ID" signature
+     * 0x28-0x2B: 00 00 + cylinders (16-bit BE)
+     * 0x2C-0x2F: 02 31 01 00 (format version flags)
+     * 0x44-0x45: "OS" signature
+     * 0x46-0x49: 00 14 + high 16 bits of total_blocks - 1
+     */
+    uint32_t total_minus_1 = total_blocks - 1;
+
+    block[0x00] = 0x00;
+    block[0x01] = 0x00;
+    block[0x02] = 0x02;
+    block[0x03] = 0x00;
     /* Offset 0x0C: heads = 2 */
     block[0x0C] = 0x02;
-    /* Offset 0x0E-0x11: total blocks (24-bit at 0x0F) - mimicking observed format */
-    block[0x0E] = 0x00;
-    block[0x0F] = (total_blocks >> 16) & 0xFF;
-    block[0x10] = (total_blocks >> 8) & 0xFF;
-    block[0x11] = total_blocks & 0xFF;
+    /* Offset 0x0E-0x11: total_blocks - 1, big-endian 32-bit */
+    eps_write_be32(&block[0x0E], total_minus_1);
     /* "ID" signature at offset 0x26 */
     block[0x26] = 'I';
     block[0x27] = 'D';
+    /* Offset 0x28-0x2B: 00 00 + cylinders */
+    block[0x28] = 0x00;
+    block[0x29] = 0x00;
+    uint16_t cylinders = total_blocks / (2 * 20);  /* heads=2, sectors=20 */
+    block[0x2A] = (cylinders >> 8) & 0xFF;
+    block[0x2B] = cylinders & 0xFF;
+    /* Byte 0x2C-0x2F: format version flags */
+    block[0x2C] = 0x02;
+    block[0x2D] = 0x31;
+    block[0x2E] = 0x01;
+    block[0x2F] = 0x00;
+
+    /* Offset 0x44: "OS" signature with disk geometry */
+    block[0x44] = 'O';
+    block[0x45] = 'S';
+    /* Offset 0x46-0x49: 00 14 + high 16 bits of total_blocks - 1 */
+    block[0x46] = 0x00;
+    block[0x47] = 0x14;
+    block[0x48] = (total_minus_1 >> 8) & 0xFF;
+    block[0x49] = total_minus_1 & 0xFF;
+
     if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
 
     /* Block 2: OS info + root directory */
     memset(block, 0, EPS_BLOCK_SIZE);
-    /* Free blocks at offset 0x01-0x03 (24-bit big-endian) */
+    /* Free blocks count at offset 0x01-0x03 (24-bit big-endian) */
+    /* Actually looking at reference: 00 14 30 A7 at bytes 0-3 */
+    /* This seems to be: byte0=0, bytes 1-3 = free block count */
+    block[0x00] = 0x00;
     block[0x01] = (free_blocks >> 16) & 0xFF;
     block[0x02] = (free_blocks >> 8) & 0xFF;
     block[0x03] = free_blocks & 0xFF;
+    /* Geometry flags at 0x04-0x07 (0x02 0x31 0x01 0x00 in reference) */
+    block[0x04] = 0x02;
+    block[0x05] = 0x31;
+    block[0x06] = 0x01;
+    block[0x07] = 0x00;
     /* "OS" signature at offset 0x1C */
     block[0x1C] = 'O';
     block[0x1D] = 'S';
 
-    /* Root directory entries start at offset 0x1E */
+    /* Root directory entries start at offset 0x1E in block 2 */
     uint8_t *entry = &block[0x1E];
+    /* Also maintain pointer for block 3 (continuation) */
+    uint8_t *entry3 = block3;
+
+    /* Calculate subdirectory block locations */
+    uint32_t sounds_dir_block = data_start;
+    uint32_t banks_dir_block = sounds_dir_block + 2;
+    uint32_t seqs_dir_block = banks_dir_block + 2;
+    uint32_t sysex_dir_block = seqs_dir_block + 2;
 
     if (include_os) {
-        /* OS file entry */
+        /* OS file entry - in block 2 */
         entry[0] = 0x00;                    /* type_info */
         entry[1] = EPS_TYPE_OS;             /* file_type = OS */
         memcpy(&entry[2], "EPS-1 O.S.  ", 12);  /* filename */
@@ -787,10 +841,18 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
         eps_write_be16(&entry[16], EPS_OS_BLOCKS);  /* contiguous */
         eps_write_be32(&entry[18], os_start_block); /* first block */
         entry += EPS_DIR_ENTRY_SIZE;
+
+        /* Also write to block 3 (mirrored) */
+        entry3[0] = 0x00;
+        entry3[1] = EPS_TYPE_OS;
+        memcpy(&entry3[2], "EPS-1 O.S.  ", 12);
+        eps_write_be16(&entry3[14], EPS_OS_BLOCKS);
+        eps_write_be16(&entry3[16], EPS_OS_BLOCKS);
+        eps_write_be32(&entry3[18], os_start_block);
+        entry3 += EPS_DIR_ENTRY_SIZE;
     }
 
-    /* SOUNDS subdirectory */
-    uint32_t sounds_dir_block = data_start;
+    /* SOUNDS subdirectory - block 2 */
     entry[0] = 0x00;
     entry[1] = EPS_TYPE_SUBDIR;
     memcpy(&entry[2], "SOUNDS      ", 12);
@@ -798,9 +860,16 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     eps_write_be16(&entry[16], 2);
     eps_write_be32(&entry[18], sounds_dir_block);
     entry += EPS_DIR_ENTRY_SIZE;
+    /* Mirror to block 3 */
+    entry3[0] = 0x00;
+    entry3[1] = EPS_TYPE_SUBDIR;
+    memcpy(&entry3[2], "SOUNDS      ", 12);
+    eps_write_be16(&entry3[14], 2);
+    eps_write_be16(&entry3[16], 2);
+    eps_write_be32(&entry3[18], sounds_dir_block);
+    entry3 += EPS_DIR_ENTRY_SIZE;
 
     /* BANKS subdirectory */
-    uint32_t banks_dir_block = sounds_dir_block + 2;
     entry[0] = 0x00;
     entry[1] = EPS_TYPE_SUBDIR;
     memcpy(&entry[2], "BANKS       ", 12);
@@ -808,9 +877,16 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     eps_write_be16(&entry[16], 2);
     eps_write_be32(&entry[18], banks_dir_block);
     entry += EPS_DIR_ENTRY_SIZE;
+    /* Mirror */
+    entry3[0] = 0x00;
+    entry3[1] = EPS_TYPE_SUBDIR;
+    memcpy(&entry3[2], "BANKS       ", 12);
+    eps_write_be16(&entry3[14], 2);
+    eps_write_be16(&entry3[16], 2);
+    eps_write_be32(&entry3[18], banks_dir_block);
+    entry3 += EPS_DIR_ENTRY_SIZE;
 
     /* SEQUENCES subdirectory */
-    uint32_t seqs_dir_block = banks_dir_block + 2;
     entry[0] = 0x00;
     entry[1] = EPS_TYPE_SUBDIR;
     memcpy(&entry[2], "SEQUENCES   ", 12);
@@ -818,21 +894,39 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     eps_write_be16(&entry[16], 2);
     eps_write_be32(&entry[18], seqs_dir_block);
     entry += EPS_DIR_ENTRY_SIZE;
+    /* Mirror */
+    entry3[0] = 0x00;
+    entry3[1] = EPS_TYPE_SUBDIR;
+    memcpy(&entry3[2], "SEQUENCES   ", 12);
+    eps_write_be16(&entry3[14], 2);
+    eps_write_be16(&entry3[16], 2);
+    eps_write_be32(&entry3[18], seqs_dir_block);
+    entry3 += EPS_DIR_ENTRY_SIZE;
 
     /* SYSEX FILES subdirectory */
-    uint32_t sysex_dir_block = seqs_dir_block + 2;
     entry[0] = 0x00;
     entry[1] = EPS_TYPE_SUBDIR;
     memcpy(&entry[2], "SYSEX FILES ", 12);
     eps_write_be16(&entry[14], 2);
     eps_write_be16(&entry[16], 2);
     eps_write_be32(&entry[18], sysex_dir_block);
+    /* Mirror */
+    entry3[0] = 0x00;
+    entry3[1] = EPS_TYPE_SUBDIR;
+    memcpy(&entry3[2], "SYSEX FILES ", 12);
+    eps_write_be16(&entry3[14], 2);
+    eps_write_be16(&entry3[16], 2);
+    eps_write_be32(&entry3[18], sysex_dir_block);
 
     if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
 
-    /* Blocks 3-4: Directory continuation (empty for now) */
+    /* Block 3: Directory continuation (mirror of entries from block 2) */
+    if (fwrite(block3, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
+
+    /* Block 4: Directory continuation with "DR" signature */
     memset(block, 0, EPS_BLOCK_SIZE);
-    if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
+    block[510] = 'D';
+    block[511] = 'R';
     if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
 
     /* FAT blocks */
