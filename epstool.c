@@ -47,6 +47,9 @@ static void usage(const char *prog)
     fprintf(stderr, "  inst, bank, seq, song, sysex, macro, effect\n");
 }
 
+/* Forward declaration */
+static uint32_t navigate_path(eps_fs_t *fs, const char *path);
+
 static void print_entry(eps_dir_entry_t *entry, int verbose)
 {
     char name[13];
@@ -174,7 +177,7 @@ static int cmd_extract(eps_fs_t *fs, const char *filename, const char *dest)
     return 0;
 }
 
-static int cmd_import(eps_fs_t *fs, const char *src, const char *name, const char *type_str)
+static int cmd_import(eps_fs_t *fs, const char *src, const char *dest_path, const char *type_str)
 {
     eps_file_type_t type = EPS_TYPE_INSTRUMENT;
 
@@ -197,23 +200,73 @@ static int cmd_import(eps_fs_t *fs, const char *src, const char *name, const cha
         return 1;
     }
 
-    if (eps_import(fs, fs->root_dir_block, src, name, type) != 0) {
+    /* Split dest_path into parent directory and filename */
+    char *path_copy = strdup(dest_path);
+    char *last_slash = strrchr(path_copy, '/');
+
+    uint32_t parent_dir;
+    char name[13];
+
+    if (last_slash) {
+        *last_slash = '\0';
+        parent_dir = navigate_path(fs, path_copy);
+        strncpy(name, last_slash + 1, 12);
+        name[12] = '\0';
+    } else {
+        parent_dir = fs->root_dir_block;
+        strncpy(name, dest_path, 12);
+        name[12] = '\0';
+    }
+
+    free(path_copy);
+
+    if (parent_dir == 0) {
+        fprintf(stderr, "Parent directory not found for: %s\n", dest_path);
+        return 1;
+    }
+
+    if (eps_import(fs, parent_dir, src, name, type) != 0) {
         fprintf(stderr, "Failed to import: %s\n", src);
         return 1;
     }
 
-    printf("Imported %s as %s (%s)\n", src, name, eps_type_name(type));
+    printf("Imported %s as %s (%s)\n", src, dest_path, eps_type_name(type));
     return 0;
 }
 
-static int cmd_mkdir(eps_fs_t *fs, const char *name)
+static int cmd_mkdir(eps_fs_t *fs, const char *path)
 {
-    if (eps_mkdir(fs, fs->root_dir_block, name) != 0) {
-        fprintf(stderr, "Failed to create directory: %s\n", name);
+    /* Split path into parent and name */
+    char *path_copy = strdup(path);
+    char *last_slash = strrchr(path_copy, '/');
+
+    uint32_t parent_dir;
+    char name[13];
+
+    if (last_slash) {
+        *last_slash = '\0';
+        parent_dir = navigate_path(fs, path_copy);
+        strncpy(name, last_slash + 1, 12);
+        name[12] = '\0';
+    } else {
+        parent_dir = fs->root_dir_block;
+        strncpy(name, path, 12);
+        name[12] = '\0';
+    }
+
+    free(path_copy);
+
+    if (parent_dir == 0) {
+        fprintf(stderr, "Parent directory not found\n");
         return 1;
     }
 
-    printf("Created directory: %s\n", name);
+    if (eps_mkdir(fs, parent_dir, name) != 0) {
+        fprintf(stderr, "Failed to create directory: %s\n", path);
+        return 1;
+    }
+
+    printf("Created directory: %s\n", path);
     return 0;
 }
 
@@ -328,7 +381,8 @@ static uint32_t navigate_path(eps_fs_t *fs, const char *path)
     }
 
     char *path_copy = strdup(path);
-    char *token = strtok(path_copy, "/");
+    char *saveptr;
+    char *token = strtok_r(path_copy, "/", &saveptr);
     uint32_t current_dir = fs->root_dir_block;
 
     while (token) {
@@ -347,7 +401,7 @@ static uint32_t navigate_path(eps_fs_t *fs, const char *path)
         }
 
         current_dir = entry->first_block;
-        token = strtok(NULL, "/");
+        token = strtok_r(NULL, "/", &saveptr);
     }
 
     free(path_copy);

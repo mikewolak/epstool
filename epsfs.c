@@ -130,9 +130,28 @@ eps_fs_t *eps_open(const char *filename)
     return fs;
 }
 
+/* Sync free block count to disk */
+static int eps_sync_free_blocks(eps_fs_t *fs)
+{
+    if (!fs || !fs->fp) return -1;
+
+    uint8_t block[EPS_BLOCK_SIZE];
+    if (eps_read_block(fs, EPS_BLOCK_OS, block) != 0) {
+        return -1;
+    }
+
+    /* Write free block count at offset 0x01 as 24-bit big-endian */
+    eps_write_be24(&block[0x01], fs->free_blocks);
+
+    return eps_write_block(fs, EPS_BLOCK_OS, block);
+}
+
 void eps_close(eps_fs_t *fs)
 {
     if (!fs) return;
+
+    /* Sync free block count before closing */
+    eps_sync_free_blocks(fs);
 
     if (fs->fp) fclose(fs->fp);
     free(fs->filename);
@@ -316,16 +335,16 @@ eps_dir_entry_t *eps_readdir(eps_dir_t *dir)
         if (dir->entry_index < max_entries) {
             uint8_t *entry_ptr = block + base_offset + (dir->entry_index * EPS_DIR_ENTRY_SIZE);
 
-            /* Copy entry data - format is: type_info(1), file_type(1), name(12), size(2), contig(2), block(4), reserved(4) */
+            /* Copy entry data - format is: type_info(1), file_type(1), name(12), size(2), contig(2), block(4), reserved(2) */
             /* Total: 26 bytes per entry */
             entry.type_info = entry_ptr[0];
             entry.file_type = entry_ptr[1];
             memcpy(entry.filename, &entry_ptr[2], 12);
             entry.size_blocks = eps_read_be16(&entry_ptr[14]);
             entry.contiguous = eps_read_be16(&entry_ptr[16]);
-            /* Block number is stored as 4 bytes big-endian, but only low 24 bits used */
-            entry.first_block = eps_read_be32(&entry_ptr[18]) & 0x00FFFFFF;
-            /* Entry bytes 22-25 are reserved/extra */
+            /* Block number is stored as 4 bytes big-endian (only 24 bits used in practice) */
+            entry.first_block = eps_read_be32(&entry_ptr[18]);
+            /* Entry bytes 22-25 are reserved */
 
             dir->entry_index++;
             dir->entries_read++;
@@ -494,10 +513,12 @@ void eps_print_info(eps_fs_t *fs)
     printf("Ensoniq EPS Filesystem\n");
     printf("======================\n");
     printf("Image file:     %s\n", fs->filename);
-    printf("Total blocks:   %u (%u KB)\n", fs->total_blocks,
-           (fs->total_blocks * EPS_BLOCK_SIZE) / 1024);
-    printf("Free blocks:    %u (%u KB)\n", fs->free_blocks,
-           (fs->free_blocks * EPS_BLOCK_SIZE) / 1024);
+    printf("Total blocks:   %u (%u KB / %u MB)\n", fs->total_blocks,
+           (fs->total_blocks * EPS_BLOCK_SIZE) / 1024,
+           (fs->total_blocks * EPS_BLOCK_SIZE) / (1024 * 1024));
+    printf("Free blocks:    %u (%u KB / %u MB)\n", fs->free_blocks,
+           (fs->free_blocks * EPS_BLOCK_SIZE) / 1024,
+           (fs->free_blocks * EPS_BLOCK_SIZE) / (1024 * 1024));
     printf("Type:           %s\n", fs->is_hard_disk ? "Hard Disk" : "Floppy");
     printf("FAT blocks:     %u (starting at block %u)\n", fs->fat_blocks, fs->fat_start);
     printf("Root dir block: %u\n", fs->root_dir_block);
@@ -529,9 +550,12 @@ int eps_mkdir(eps_fs_t *fs, uint32_t parent_dir, const char *name)
     eps_fat_write(fs, dir_block1, dir_block2);
     eps_fat_write(fs, dir_block2, EPS_FAT_END);
 
-    /* Initialize directory blocks with zeros */
+    /* Initialize directory blocks - block 2 gets "DR" signature */
     uint8_t empty_block[EPS_BLOCK_SIZE] = {0};
     eps_write_block(fs, dir_block1, empty_block);
+    /* Second directory block has "DR" signature at bytes 510-511 */
+    empty_block[510] = 'D';
+    empty_block[511] = 'R';
     eps_write_block(fs, dir_block2, empty_block);
 
     /* Create parent directory entry in new directory */
@@ -540,10 +564,13 @@ int eps_mkdir(eps_fs_t *fs, uint32_t parent_dir, const char *name)
     /* First entry: parent directory pointer */
     block[0] = 0;  /* type_info */
     block[1] = EPS_TYPE_PARENT_DIR;
-    memset(&block[2], ' ', 12);  /* filename */
-    eps_write_be16(&block[14], 2);  /* size_blocks */
+    /* Parent name - for root level this would be empty/spaces, for subdirs it's parent name */
+    memset(&block[2], ' ', 12);
+    eps_write_be16(&block[14], 0);  /* size_blocks = 0 for parent entry */
     eps_write_be16(&block[16], 2);  /* contiguous */
-    eps_write_be24(&block[18], parent_dir);  /* first_block (points to parent) */
+    /* For root-level directories, parent points to block 3, not block 2 */
+    uint32_t parent_block = (parent_dir == EPS_BLOCK_OS) ? 3 : parent_dir;
+    eps_write_be32(&block[18], parent_block);
 
     eps_write_block(fs, dir_block1, block);
 
@@ -557,6 +584,7 @@ int eps_mkdir(eps_fs_t *fs, uint32_t parent_dir, const char *name)
     /* Find a free entry slot in parent directory */
     uint32_t current = parent_dir;
     int slot = -1;
+    int base_offset = 0;
 
     while (current != EPS_FAT_END) {
         if (eps_read_block(fs, current, block) != 0) {
@@ -565,8 +593,13 @@ int eps_mkdir(eps_fs_t *fs, uint32_t parent_dir, const char *name)
             return -1;
         }
 
-        for (int i = 0; i < 19; i++) {
-            if (block[i * EPS_DIR_ENTRY_SIZE + 1] == EPS_TYPE_UNUSED) {
+        /* Account for offset in root directory block */
+        base_offset = get_dir_entry_offset(fs, current);
+        int max_entries = get_max_dir_entries(fs, current);
+
+        for (int i = 0; i < max_entries; i++) {
+            uint8_t *entry_ptr = &block[base_offset + i * EPS_DIR_ENTRY_SIZE];
+            if (entry_ptr[1] == EPS_TYPE_UNUSED) {
                 slot = i;
                 break;
             }
@@ -585,15 +618,30 @@ int eps_mkdir(eps_fs_t *fs, uint32_t parent_dir, const char *name)
     }
 
     /* Write new directory entry */
-    uint8_t *entry = &block[slot * EPS_DIR_ENTRY_SIZE];
+    uint8_t *entry = &block[base_offset + slot * EPS_DIR_ENTRY_SIZE];
     entry[0] = 0;
     entry[1] = EPS_TYPE_SUBDIR;
     eps_unformat_filename(name, (char *)&entry[2]);
-    eps_write_be16(&entry[14], 2);  /* size */
+    eps_write_be16(&entry[14], 2);  /* size = 2 for directories */
     eps_write_be16(&entry[16], 2);  /* contiguous */
-    eps_write_be24(&entry[18], dir_block1);
+    eps_write_be32(&entry[18], dir_block1);
 
     eps_write_block(fs, current, block);
+
+    /* If writing to root directory (block 2), also update block 3 mirror */
+    if (current == EPS_BLOCK_OS && fs->is_hard_disk) {
+        /* Block 3 entries start at offset 0, not 0x1E */
+        uint8_t mirror_block[EPS_BLOCK_SIZE];
+        eps_read_block(fs, 3, mirror_block);
+        uint8_t *mirror_entry = &mirror_block[slot * EPS_DIR_ENTRY_SIZE];
+        mirror_entry[0] = 0;
+        mirror_entry[1] = EPS_TYPE_SUBDIR;
+        eps_unformat_filename(name, (char *)&mirror_entry[2]);
+        eps_write_be16(&mirror_entry[14], 2);
+        eps_write_be16(&mirror_entry[16], 2);
+        eps_write_be32(&mirror_entry[18], dir_block1);
+        eps_write_block(fs, 3, mirror_block);
+    }
 
     return 0;
 }
@@ -678,6 +726,7 @@ int eps_import(eps_fs_t *fs, uint32_t dir_block, const char *src_path,
     uint8_t dir_buf[EPS_BLOCK_SIZE];
     uint32_t current = dir_block;
     int slot = -1;
+    int base_offset = 0;
 
     while (current != EPS_FAT_END && current != EPS_FAT_FREE) {
         if (eps_read_block(fs, current, dir_buf) != 0) {
@@ -686,8 +735,13 @@ int eps_import(eps_fs_t *fs, uint32_t dir_block, const char *src_path,
             return -1;
         }
 
-        for (int i = 0; i < 19; i++) {
-            if (dir_buf[i * EPS_DIR_ENTRY_SIZE + 1] == EPS_TYPE_UNUSED) {
+        /* Account for offset in root directory block */
+        base_offset = get_dir_entry_offset(fs, current);
+        int max_entries = get_max_dir_entries(fs, current);
+
+        for (int i = 0; i < max_entries; i++) {
+            uint8_t *entry_ptr = &dir_buf[base_offset + i * EPS_DIR_ENTRY_SIZE];
+            if (entry_ptr[1] == EPS_TYPE_UNUSED) {
                 slot = i;
                 break;
             }
@@ -704,13 +758,13 @@ int eps_import(eps_fs_t *fs, uint32_t dir_block, const char *src_path,
     }
 
     /* Write directory entry */
-    uint8_t *entry = &dir_buf[slot * EPS_DIR_ENTRY_SIZE];
+    uint8_t *entry = &dir_buf[base_offset + slot * EPS_DIR_ENTRY_SIZE];
     entry[0] = 0;
     entry[1] = type;
     eps_unformat_filename(name, (char *)&entry[2]);
     eps_write_be16(&entry[14], blocks_needed);
     eps_write_be16(&entry[16], contiguous);
-    eps_write_be24(&entry[18], block_list[0]);
+    eps_write_be32(&entry[18], block_list[0]);
 
     eps_write_block(fs, current, dir_buf);
 
@@ -740,7 +794,11 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     uint32_t os_start_block = EPS_BLOCK_FAT_START + fat_blocks;
     uint32_t os_blocks = include_os ? EPS_OS_BLOCKS : 0;
     uint32_t data_start = os_start_block + os_blocks;
-    uint32_t free_blocks = total_blocks - data_start;
+    /* total_blocks - 1 is stored in ID block, so free = (total-1) - (used - 1)
+     * used blocks = 5 system + fat_blocks + os_blocks = data_start
+     * But block 0 is counted as used in FAT yet excluded from total in ID block
+     * So: free = total_blocks - data_start - 1 */
+    uint32_t free_blocks = total_blocks - data_start - 1;
 
     /* Create the file */
     FILE *fp = fopen(filename, "wb");
@@ -826,12 +884,6 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     /* Also maintain pointer for block 3 (continuation) */
     uint8_t *entry3 = block3;
 
-    /* Calculate subdirectory block locations */
-    uint32_t sounds_dir_block = data_start;
-    uint32_t banks_dir_block = sounds_dir_block + 2;
-    uint32_t seqs_dir_block = banks_dir_block + 2;
-    uint32_t sysex_dir_block = seqs_dir_block + 2;
-
     if (include_os) {
         /* OS file entry - in block 2 */
         entry[0] = 0x00;                    /* type_info */
@@ -851,72 +903,6 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
         eps_write_be32(&entry3[18], os_start_block);
         entry3 += EPS_DIR_ENTRY_SIZE;
     }
-
-    /* SOUNDS subdirectory - block 2 */
-    entry[0] = 0x00;
-    entry[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry[2], "SOUNDS      ", 12);
-    eps_write_be16(&entry[14], 2);
-    eps_write_be16(&entry[16], 2);
-    eps_write_be32(&entry[18], sounds_dir_block);
-    entry += EPS_DIR_ENTRY_SIZE;
-    /* Mirror to block 3 */
-    entry3[0] = 0x00;
-    entry3[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry3[2], "SOUNDS      ", 12);
-    eps_write_be16(&entry3[14], 2);
-    eps_write_be16(&entry3[16], 2);
-    eps_write_be32(&entry3[18], sounds_dir_block);
-    entry3 += EPS_DIR_ENTRY_SIZE;
-
-    /* BANKS subdirectory */
-    entry[0] = 0x00;
-    entry[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry[2], "BANKS       ", 12);
-    eps_write_be16(&entry[14], 2);
-    eps_write_be16(&entry[16], 2);
-    eps_write_be32(&entry[18], banks_dir_block);
-    entry += EPS_DIR_ENTRY_SIZE;
-    /* Mirror */
-    entry3[0] = 0x00;
-    entry3[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry3[2], "BANKS       ", 12);
-    eps_write_be16(&entry3[14], 2);
-    eps_write_be16(&entry3[16], 2);
-    eps_write_be32(&entry3[18], banks_dir_block);
-    entry3 += EPS_DIR_ENTRY_SIZE;
-
-    /* SEQUENCES subdirectory */
-    entry[0] = 0x00;
-    entry[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry[2], "SEQUENCES   ", 12);
-    eps_write_be16(&entry[14], 2);
-    eps_write_be16(&entry[16], 2);
-    eps_write_be32(&entry[18], seqs_dir_block);
-    entry += EPS_DIR_ENTRY_SIZE;
-    /* Mirror */
-    entry3[0] = 0x00;
-    entry3[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry3[2], "SEQUENCES   ", 12);
-    eps_write_be16(&entry3[14], 2);
-    eps_write_be16(&entry3[16], 2);
-    eps_write_be32(&entry3[18], seqs_dir_block);
-    entry3 += EPS_DIR_ENTRY_SIZE;
-
-    /* SYSEX FILES subdirectory */
-    entry[0] = 0x00;
-    entry[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry[2], "SYSEX FILES ", 12);
-    eps_write_be16(&entry[14], 2);
-    eps_write_be16(&entry[16], 2);
-    eps_write_be32(&entry[18], sysex_dir_block);
-    /* Mirror */
-    entry3[0] = 0x00;
-    entry3[1] = EPS_TYPE_SUBDIR;
-    memcpy(&entry3[2], "SYSEX FILES ", 12);
-    eps_write_be16(&entry3[14], 2);
-    eps_write_be16(&entry3[16], 2);
-    eps_write_be32(&entry3[18], sysex_dir_block);
 
     if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
 
@@ -951,14 +937,6 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
                 } else {
                     fat_value = block_num + 1;
                 }
-            } else if (block_num >= data_start && block_num < data_start + 8) {
-                /* Subdirectory blocks (4 dirs * 2 blocks each) */
-                uint32_t dir_offset = block_num - data_start;
-                if (dir_offset % 2 == 0) {
-                    fat_value = block_num + 1;  /* First block -> second */
-                } else {
-                    fat_value = EPS_FAT_END;    /* Second block = end */
-                }
             } else {
                 fat_value = EPS_FAT_FREE;  /* Free space */
             }
@@ -982,28 +960,9 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
         if (fwrite(eps_os_data, EPS_OS_SIZE, 1, fp) != 1) goto error;
     }
 
-    /* Write subdirectory blocks */
-    /* Each subdirectory has 2 blocks with parent dir entry */
-    for (int d = 0; d < 4; d++) {
-        /* First block of subdir - contains parent pointer */
-        memset(block, 0, EPS_BLOCK_SIZE);
-        entry = block;
-        entry[0] = 0x00;
-        entry[1] = EPS_TYPE_PARENT_DIR;
-        memcpy(&entry[2], "ROOT        ", 12);
-        eps_write_be16(&entry[14], 2);
-        eps_write_be16(&entry[16], 2);
-        eps_write_be32(&entry[18], EPS_BLOCK_OS);  /* Points to root */
-        if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
-
-        /* Second block of subdir - empty */
-        memset(block, 0, EPS_BLOCK_SIZE);
-        if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
-    }
-
     /* Fill remaining space with zeros */
     memset(block, 0, EPS_BLOCK_SIZE);
-    uint32_t current_block = data_start + 8;  /* After subdirs */
+    uint32_t current_block = data_start;
     while (current_block < total_blocks) {
         if (fwrite(block, EPS_BLOCK_SIZE, 1, fp) != 1) goto error;
         current_block++;
@@ -1014,8 +973,8 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     printf("  Size: %u MB (%u blocks)\n", size_mb, total_blocks);
     printf("  FAT blocks: %u\n", fat_blocks);
     printf("  OS included: %s\n", include_os ? "yes" : "no");
-    printf("  Free blocks: %u (%u KB)\n", free_blocks - 8,
-           ((free_blocks - 8) * EPS_BLOCK_SIZE) / 1024);
+    printf("  Free blocks: %u (%u KB)\n", free_blocks,
+           (free_blocks * EPS_BLOCK_SIZE) / 1024);
     return 0;
 
 error:
