@@ -1,0 +1,183 @@
+Ensoniq EPS, EPS16, SD-1, VFX-SD Disk Format Technical Specification
+Source: https://www.youngmonkey.ca/nose/audio_tech/synth/Ensoniq-DiskFormats.html
+
+================================================================================
+PHYSICAL DISK STRUCTURE
+================================================================================
+
+These Ensoniq synthesizers share identical disk architecture:
+- 80 tracks (0-79)
+- Dual read/write heads
+- 10 sectors per track
+- 512 bytes per sector
+- Total: 1,600 blocks (for floppy)
+
+Data writes sequentially: Track 0 Head 0, then Track 0 Head 1, continuing
+through Track 79 Head 1.
+
+Block Calculation Formula:
+  Block = ((Track × 2) + Head) × 10 + Sector
+
+Reverse calculation:
+  Track = Block / 20
+  Head = (Block % 20) / 10
+  Sector = Block % 10
+
+================================================================================
+DISK ORGANIZATION
+================================================================================
+
+EPS & EPS-16 PLUS Layout:
+-------------------------
+Block 0:        Unused (repeating pattern 6D B6 hex)
+Block 1:        Device ID Block
+Block 2:        Operating System Block
+Blocks 3-4:     Main Directory (2 sectors)
+Blocks 5-14:    File Allocation Blocks (FAT)
+Blocks 15-1599: Data/Unused space
+
+SD-1 & VFX-SD Layout:
+---------------------
+Blocks 0-2:     Same as EPS
+Blocks 3-4:     Main Directory (points to 4 sub-directories)
+Blocks 5-14:    File Allocation Blocks
+Blocks 15-22:   Four Sub-Directories (2 sectors each)
+Block 23+:      Data area or Sequencer OS
+
+================================================================================
+DIRECTORY ENTRY STRUCTURE (26 bytes)
+================================================================================
+
+Offset  Size  Content
+------  ----  -------
+0       1     Type-dependent info (bank/preset data for VFX-SD)
+1       1     File Type code
+2-13    12    Filename (space-padded)
+14-15   2     File size in blocks (big-endian)
+16-17   2     Contiguous block count (big-endian)
+18-21   4     First block pointer (big-endian, only 24 bits used)
+22      1     File number (0-59, reserved on EPS)
+23-25   3     24-bit byte count (for VFX-SD)
+
+================================================================================
+FILE TYPE CODES
+================================================================================
+
+Hex  Dec  Description
+---  ---  -----------
+00   0    Unused/Blank entry
+01   1    EPS Operating System
+02   2    Sub-Directory
+03   3    EPS Individual Instrument
+04   4    EPS Bank of Sounds
+05   5    EPS Sequence
+06   6    EPS Song
+07   7    EPS System Exclusive
+08   8    Parent Directory Pointer
+09   9    EPS Macro
+
+SD-1/VFX-SD Program Files:
+0A   10   1 Program
+0B   11   6 Programs
+0C   12   30 Programs
+0D   13   60 Programs
+
+SD-1/VFX-SD Preset Files:
+0E   14   1 Preset
+0F   15   10 Presets (6 for VFX-SD?)
+10   16   20 Presets (30 for VFX-SD?)
+
+SD-1/VFX-SD Sequence/System Files:
+11   17   1 Sequence (or 60 presets)
+12   18   30 Sequences (or VFX Sequence)
+13   19   60 Sequences (or VFX Song)
+14   20   System Exclusive (VFX)
+15   21   Setup/Seq+Song (VFX)
+16   22   All/Sequencer OS (VFX)
+
+EPS-16 Plus Specific:
+17   23   EPS-16 Effect
+18   24   EPS-16 Instrument
+19   25   EPS-16 Bank
+1A   26   EPS-16 Effect (alternate?)
+1B   27   EPS-16 Operating System
+
+================================================================================
+DEVICE ID BLOCK (Block 1)
+================================================================================
+
+Standard 40-byte pattern (hex):
+00 80 01 00 00 0A 00 02 00 50 00 00 02 00 00 00
+06 40 1E 02 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 49 44
+
+Key fields:
+- Offset 0x05: Sectors per track (0x0A = 10)
+- Offset 0x07: Heads (0x02 = 2)
+- Offset 0x08-0x09: Bytes per sector (0x0050 = 80? or different)
+- Offset 0x26-0x27: "ID" signature (0x4944)
+
+EPS-16 PLUS disk labels:
+- Byte 30 = 0xFF indicates label present
+- Bytes 31-38: ASCII disk label characters
+
+================================================================================
+FILE ALLOCATION BLOCK (FAB/FAT) STRUCTURE
+================================================================================
+
+Each FAT block contains 170 three-byte entries (170 * 3 = 510 bytes).
+Last 2 bytes of each FAT block: signature "FB" (0x46 0x42)
+
+Entry values (3 bytes, big-endian):
+- 00 00 00: Empty/unused block (free)
+- 00 00 01: End of file marker
+- 00 00 02: Bad block flag
+- Other values: Pointer to next block in chain
+
+Reserved entries:
+- EPS/EPS-16: First 15 entries reserved (blocks 0-14)
+- VFX-SD/SD-1: First 23 entries reserved (blocks 0-22)
+
+================================================================================
+CAPACITY CONSTRAINTS
+================================================================================
+
+Directory limits:
+- Main directory: 39 entries maximum per directory/sub-directory
+- EPS/EPS-16: Unlimited sub-directories (limited by disk space)
+- VFX-SD/SD-1: Exactly 4 sub-directories × 39 entries = 156 maximum files
+
+File limits:
+- Each file type on VFX-SD limited to 60 files maximum
+- File numbers 0-59 for indexed file types
+
+================================================================================
+FILE STORAGE PROTOCOL
+================================================================================
+
+Reading:
+1. Look up filename in directory
+2. Get first block pointer from directory entry
+3. Read contiguous blocks (count from directory entry)
+4. Follow FAT chain for remaining blocks
+5. Continue until FAT entry = 0x000001 (end)
+
+Writing:
+1. Check filename uniqueness
+2. Verify free block availability
+3. Allocate contiguous blocks if possible (improves performance)
+4. Update FAT entries to form chain
+5. Update free block count in OS block
+6. Write directory entry
+
+================================================================================
+HARD DISK DIFFERENCES
+================================================================================
+
+For SCSI hard disks:
+- Same basic structure but more blocks
+- FAT uses 24-bit block pointers (supports up to 16M blocks = 8GB)
+- FAT blocks calculated as: ceil(total_blocks / 170)
+- Block 2 contains root directory starting at offset 0x1E
+- "OS" signature at offset 0x1C in block 2
+- Free block count at offset 0x01-0x03 in block 2 (24-bit big-endian)

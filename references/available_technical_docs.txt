@@ -1,0 +1,66 @@
+Available Ensoniq Technical Documents
+Source: https://zine.r-massive.com/ensoniq-technical-documents-and-schematics/
+
+================================================================================
+EPS FILE FORMAT DOCUMENTS
+================================================================================
+
+1. "Ensoniq EPS & ASR Sequence Structure" by Terje Finstad
+   - Details sequence data organization
+
+2. "Ensoniq EPS, EPS16, & ASR-10 Bank Format v0.7" by Thoralt Franz
+   - Instrument bank structures
+   - Key document for understanding instrument/bank file format
+
+3. "Ensoniq Floppy Diskette Format" by Gary Giebler (Giebler Enterprises)
+   - Disk organization details
+   - Original source for EDE/EFA format specs
+
+4. "FAQ on Ensoniq File Formats" by Terje Finstad
+   - Comprehensive format reference
+
+5. "Ensoniq EFE File Format" by Steve Quartly & Gary Giebler
+   - Custom instrument creation specifications
+   - Key document for understanding EFE instrument format
+
+================================================================================
+MIDI SYSEX SPECIFICATIONS
+================================================================================
+
+EPS Series:
+- EPS and EPSm MIDI SysEx Specification
+- EPS16+ External Command Specification v1.30
+
+ASR Series:
+- ASR-10 and ASR-88 External Command Specification
+
+Other Ensoniq Equipment:
+- DP/4 MIDI SysEx Implementation v1.02
+- DP/4+ MIDI SysEx Implementation v2.05.01
+
+================================================================================
+DOCUMENT ACCESS
+================================================================================
+
+Documents are hosted via:
+- Google Drive
+- Mega.nz
+- MediaFire
+
+Note: Quality varies - some are original scans, others are mixed-source materials.
+
+================================================================================
+KEY DOCUMENTS FOR INSTRUMENT EXTRACTION/CREATION
+================================================================================
+
+Priority documents to obtain:
+1. "Ensoniq EFE File Format" - instrument file structure
+2. "Ensoniq EPS, EPS16, & ASR-10 Bank Format v0.7" - bank structure
+3. "EPS16+ External Command Specification v1.30" - detailed format info
+4. "Ensoniq Floppy Diskette Format" - disk-level format
+
+These would provide the byte-level specifications needed for:
+- Extracting instruments from disk images
+- Creating new instruments
+- Converting between formats
+- Understanding wavesample structure

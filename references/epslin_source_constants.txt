@@ -1,0 +1,142 @@
+EpsLin Neo v1.58 Source Code Constants
+Source: https://github.com/handsthatstrike/EpsLinNeo/blob/master/EpsLin_v1.58.c
+
+================================================================================
+CORE BLOCK DEFINITIONS
+================================================================================
+
+#define BLOCK_SIZE              512
+#define ID_BLOCK                1
+#define DISK_LABEL_SIZE         7
+#define OS_BLOCK                2
+#define DIR_START_BLOCK         3
+#define DIR_BLOCKS              2
+#define DIR_END_BLOCK           4
+#define EFE_SIZE                26      // Directory entry size
+#define MAX_NUM_OF_DIR_ENTRIES  39      // Per directory block pair
+#define MAX_DIR_DEPTH           10      // Maximum subdirectory nesting
+#define FAT_START_BLOCK         5
+#define FAT_ENTRIES_PER_BLK     170     // 170 * 3 = 510 bytes
+
+================================================================================
+DISK IMAGE SIZE CONSTANTS
+================================================================================
+
+#define EPS_IMAGE_SIZE      819200      // 800K DD diskettes (1600 blocks)
+#define E16_SD_IMAGE_SIZE   2611200     // 2550K SuperDisk
+#define ASR_IMAGE_SIZE      1638400     // 1600K HD diskettes (3200 blocks)
+#define ASR_SD_IMAGE_SIZE   5222400     // 5100K SuperDisk
+
+================================================================================
+GIEBLER FORMAT (EDE/EDA) CONSTANTS
+================================================================================
+
+EDE Format (EPS):
+#define EDE_LABEL           "EPS-16 Disk"
+#define EDE_SKIP_START      0xA0        // Skip table starts at offset 160
+#define EDE_SKIP_SIZE       200         // 200 bytes for skip table
+#define EDE_ID              0x03
+
+EDA Format (ASR):
+#define EDA_LABEL           "ASR-10 Disk"
+#define EDA_SKIP_START      0x60        // Skip table starts at offset 96
+#define EDA_SKIP_SIZE       400         // 400 bytes for skip table
+#define EDA_ID              0xCB
+
+================================================================================
+FILE TYPE CODES (50 types, index 0-49)
+================================================================================
+
+Index  Hex   Name       Description
+-----  ----  ---------  -----------
+0      0x00  (empty)    Unused entry
+1      0x01  EPS-OS     EPS Operating System
+2      0x02  DIR        Sub-directory
+3      0x03  Instr      Individual Instrument File
+4      0x04  EPS-Bnk    Bank of Sounds
+5      0x05  Seq        Sequence
+6      0x06  Song       Song
+7      0x07  Sys-Ex     System Exclusive
+8      0x08  ParentDir  Parent Directory Pointer
+9      0x09  Macro      Macro File
+
+VFX-SD/SD-1 Types:
+10     0x0A  Prog-1     1 Program
+11     0x0B  Prog-6     6 Programs
+12     0x0C  Prog-30    30 Programs
+13     0x0D  Prog-60    60 Programs
+14     0x0E  Preset-1   1 Preset
+15     0x0F  Preset-6   6 Presets
+16     0x10  Preset-30  30 Presets
+17     0x11  Preset-60  60 Presets
+18     0x12  vSeq       VFX Sequence
+19     0x13  vSong      VFX Song
+20     0x14  vSys-Ex    VFX System Exclusive
+21     0x15  vSeqSong   VFX Seq+Song
+22     0x16  vAll       VFX All
+
+EPS-16 Plus Types:
+23     0x17  E16-Bnk    EPS-16 Plus Bank
+24     0x18  E16-Eff    EPS-16 Plus Effect
+25     0x19  E16-Inst   EPS-16 Plus Instrument
+26     0x1A  E16-Song   EPS-16 Plus Song
+27     0x1B  E16-OS     EPS-16 Plus Operating System
+
+ASR Types:
+30     0x1E  ASR-Bnk    ASR-10 Bank
+31     0x1F  ASR-Eff    ASR-10 Effect
+32     0x20  ASR-OS     ASR-10 Operating System
+33     0x21  ASR-Inst   ASR-10 Instrument (?)
+34     0x22  ASR-Macro  ASR-10 Macro
+
+TS Series Types (34-43):
+34-43  Various TS-10/TS-12 types
+
+================================================================================
+OS VERSION STRING OFFSETS (within EFE file data)
+================================================================================
+
+#define EPS_OS_POS          0x3A8       // 936 bytes into file
+#define E16_OS_POS          0x390       // 912 bytes into file
+#define ASR_OS_POS          0x6F2       // 1778 bytes into file
+
+================================================================================
+DIRECTORY ENTRY STRUCTURE (26 bytes)
+================================================================================
+
+Offset  Size  Field
+------  ----  -----
+0       1     Type info / padding
+1       1     File type code (0-49)
+2-13    12    Filename (space-padded ASCII)
+14-15   2     File size in blocks (big-endian)
+16-17   2     Contiguous block count (big-endian)
+18-21   4     Start block (big-endian, 24-bit used)
+22      1     Multi-file index (for multi-disk files)
+23-25   3     Reserved / byte count
+
+================================================================================
+GIEBLER FORMAT HEADER STRUCTURE (512 bytes)
+================================================================================
+
+The Giebler format uses a 512-byte header before the raw disk data.
+The header contains a "skip table" indicating which blocks are all zeros,
+allowing compression of disk images by not storing empty blocks.
+
+EDE/EDA Header:
+- Bytes 0-1:   CR LF (0x0D 0x0A) - DOS text file markers
+- Bytes 47-48: CR LF (0x0D 0x0A)
+- Byte 49:     EOF marker (0x1A)
+- Skip table:  Starts at EDE_SKIP_START or EDA_SKIP_START
+               Size is EDE_SKIP_SIZE or EDA_SKIP_SIZE bytes
+               Each bit indicates if corresponding block is empty
+
+================================================================================
+BLOCK SIGNATURES
+================================================================================
+
+Block 0:    Filler pattern 0x6D/0xB6 alternating (or zeros for HD)
+Block 1:    "ID" at bytes 38-39 (0x49 0x44)
+Block 2:    "OS" at bytes 28-29 (0x4F 0x53)
+Dir blocks: "DR" at bytes 510-511 (0x44 0x52)
+FAT blocks: "FB" at bytes 510-511 (0x46 0x42)

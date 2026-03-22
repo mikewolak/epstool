@@ -1,0 +1,102 @@
+EnsoniqFS Project Information
+Source: https://github.com/thoralt/ensoniqfs
+Author: Thoralt Franz
+
+================================================================================
+PROJECT OVERVIEW
+================================================================================
+
+EnsoniqFS is a file system plugin for Total Commander that enables access to
+Ensoniq-formatted media. It allows reading, writing, copying, moving, renaming,
+and deleting files on Ensoniq media.
+
+License: GPL v2
+
+================================================================================
+SUPPORTED MEDIA TYPES
+================================================================================
+
+Physical Media:
+- SCSI and IDE hard drives (read/write)
+- Removable media: ZIP drives, etc. (read/write)
+- CD-ROMs (read only)
+- Floppy disks via OmniFlop driver (read/write)
+
+Image Formats:
+- ISO images (read/write)
+- IMG - raw disk images
+- BIN - Mode1 CDROM images (read only)
+- GKH - Goh King Wah format (read only)
+- EDE - Giebler EPS disk image (read only)
+- EDA - Giebler ASR disk image (read only)
+- EDT - (read only)
+- EDV - (read only)
+
+================================================================================
+MULTI-DISK FILE HANDLING
+================================================================================
+
+EPS/ASR samplers automatically partition large instruments across multiple
+floppy disks when saving. These "multi-disk" instruments have special handling:
+
+- All multi-disk file parts reside in the root directory of each disk
+- Subdirectory placement may cause sampler compatibility issues
+- EnsoniqFS can merge multi-disk parts or copy individual parts
+
+================================================================================
+BANK FILE STRUCTURE
+================================================================================
+
+Bank files store references to instruments and songs:
+- Up to 8 instrument file references
+- Optional song file references
+
+Each reference contains:
+1. Device type (floppy or SCSI ID 0-7)
+2. Disk label (EPS16+ and ASR-10 only)
+3. File pointer list (chain of file numbers)
+
+File Pointer List:
+- Chain of directory entries leading to the file
+- Maximum 6 entries allowed per reference
+- First 5 entries = directory path
+- Last entry = actual file
+- Numbers correspond to file numbers shown in LOAD mode
+
+Restriction: Files can be at most 5 directory levels deep.
+
+EPS-specific: Bank file and referenced files must be on same disk.
+
+================================================================================
+BANK FILE ADAPTATION FEATURE
+================================================================================
+
+When copying/moving files, EnsoniqFS automatically updates bank file references
+to maintain instrument-to-bank associations, even when files are relocated.
+
+================================================================================
+RELATED TOOLS
+================================================================================
+
+ETools utility (companion to EnsoniqFS):
+- Backup Ensoniq drives
+- Restore Ensoniq drives
+- Format Ensoniq media
+- Error checking
+
+================================================================================
+SCSI ID NOTES
+================================================================================
+
+The Ensoniq sampler itself is typically assigned SCSI ID 3.
+External drives use other SCSI IDs (0-7, excluding 3).
+
+================================================================================
+RELATED DOCUMENTATION
+================================================================================
+
+Thoralt Franz also authored:
+"The Ensoniq EPS/EPS16+/ASR-10 Bank Format" v0.7
+Available at: http://www.thoralt.de/download/The_Ensoniq_Bank_Format.pdf
+
+This document contains detailed byte-level specifications for bank file format.

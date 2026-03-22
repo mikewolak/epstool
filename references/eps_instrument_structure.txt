@@ -1,0 +1,177 @@
+Ensoniq EPS Instrument and Wavesample Structure
+Compiled from various sources
+
+================================================================================
+INSTRUMENT HIERARCHY
+================================================================================
+
+Instrument
+├── Up to 8 Layers
+│   └── Each layer contains a keymap across the keyboard
+│       └── Wavesamples assigned to key ranges
+└── Up to 127 Wavesamples total (across all layers)
+
+================================================================================
+LAYER STRUCTURE
+================================================================================
+
+A Layer is a group of Wavesamples spread across the keyboard.
+Each Instrument can contain up to 8 Layers.
+
+For each of the 4 possible Patches, any of the 8 Layers can be:
+- Made to play
+- Made to remain silent
+
+Patch Select buttons select different Layers to play.
+
+Layer contains:
+- Keymap definitions (which wavesample plays at which key range)
+- Velocity switching/crossfading parameters
+- Layer-level envelope settings
+- Poly/mono mode settings
+- Note triggering configuration
+
+================================================================================
+WAVESAMPLE STRUCTURE
+================================================================================
+
+A Wavesample is a unit that holds:
+1. Sample data (actual waveform)
+2. Parameters affecting the wavedata
+3. OR pointers to another wavesample's data (for memory efficiency)
+
+Wavesample Parameters include:
+- Sample start point
+- Sample end point
+- Loop start point
+- Loop end point
+- Loop mode (forward, bidirectional, transwave)
+- Root note (original pitch)
+- Sample rate
+- Fine tuning
+- ADSR-like envelopes
+
+================================================================================
+SAMPLE DATA FORMAT
+================================================================================
+
+EPS (Original):
+- 13-bit A/D input (internally 16-bit)
+- 16-bit D/A output (stereo)
+- Samples stored as 16-bit, but lowest 3 bits zeroed on save
+- Mono sampling only
+
+EPS-16 Plus:
+- Full 16-bit A/D and D/A
+- Stereo sampling capability
+
+ASR-10/ASR-88:
+- Full 16-bit
+- Stereo sampling
+- Up to 16MB sample memory
+
+================================================================================
+SAMPLE RATES AND POLYPHONY
+================================================================================
+
+Available Sample Rates:
+- 52.0 kHz (highest quality)
+- 39.0 kHz
+- 31.2 kHz
+- 26.0 kHz
+- 19.5 kHz
+- 15.6 kHz
+- 13.0 kHz
+- 9.75 kHz
+- 7.8 kHz
+- 6.25 kHz (lowest quality, longest sample time)
+
+Polyphony vs Sample Rate:
+- 52.0 kHz: 12 voices
+- 39.0 kHz: 16 voices
+- 31.2 kHz: 20 voices
+(Lower rates = more voices)
+
+Sample Time (with 1MB memory):
+- 52.0 kHz: ~5 seconds
+- 6.25 kHz: ~41 seconds
+
+================================================================================
+LOOP MODES
+================================================================================
+
+Standard Loop Modes:
+- Forward loop: plays loop section forward repeatedly
+- Bidirectional (ping-pong): alternates forward and backward
+- One-shot: plays once, no looping
+
+EPS-16+ Transwave Mode:
+- Loop start point can be modulated in single-cycle steps
+- Creates evolving, wavetable-like sounds (similar to PPG Wave)
+
+Loop Parameters:
+- Loop start point
+- Loop end point
+- Crossfade length (for smooth loop transitions)
+
+================================================================================
+MULTI-SAMPLE / VELOCITY LAYERS
+================================================================================
+
+Instruments can have:
+- Multiple samples mapped across keyboard (multisampling)
+- Velocity-switched samples (different sample per velocity range)
+- Velocity crossfaded samples (blend between samples)
+
+Each Layer independently maps wavesamples to:
+- Key ranges (which keys trigger which sample)
+- Velocity ranges (which velocities trigger which sample)
+
+================================================================================
+MEMORY LAYOUT (within file)
+================================================================================
+
+Based on EpsLin source code analysis:
+
+Instrument File (EFE) Structure:
+1. Instrument header/parameters
+2. Layer definitions (up to 8)
+3. Wavesample parameter blocks (up to 127)
+4. Sample data blocks
+
+Note: Exact byte offsets not fully documented publicly.
+See EFE2WAV and WAV2EFE tools for implementation details.
+
+================================================================================
+FILE SIZE CONSIDERATIONS
+================================================================================
+
+Instrument files can span multiple floppy disks if too large.
+Multi-disk files have these characteristics:
+- All parts stored in root directory
+- Special multi-file index byte in directory entry
+- Must be reassembled in order when loading
+
+Maximum single-file sizes:
+- EPS DD floppy: ~780KB usable
+- ASR HD floppy: ~1.5MB usable
+- SCSI hard disk: Limited by 24-bit FAT (up to 8GB)
+
+================================================================================
+CONVERSION TOOLS
+================================================================================
+
+EFE2WAV:
+- Extracts wavesamples from EFE instrument files
+- Preserves root note and loop points
+- Outputs standard WAV files
+
+WAV2EFE:
+- Converts WAV files to EFE instrument format
+- Allows selection of sample rate
+- Creates single-wavesample instruments
+
+EpsLin/EpsLinNeo:
+- Full disk/file management
+- EFE extraction and insertion
+- Format conversion

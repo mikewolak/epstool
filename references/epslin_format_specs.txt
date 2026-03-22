@@ -1,0 +1,178 @@
+EPS File Format Technical Specifications
+Source: EpsLinNeo source code (EpsLin_v1.58.c)
+https://github.com/handsthatstrike/EpsLinNeo
+
+================================================================================
+BLOCK STRUCTURE CONSTANTS
+================================================================================
+
+BLOCK_SIZE:           512 bytes
+ID_BLOCK:             Block 1 (identification)
+OS_BLOCK:             Block 2 (operating system)
+DIR_START_BLOCK:      Block 3
+DIR_END_BLOCK:        Block 4
+FAT_START_BLOCK:      Block 5 onward
+FAT_ENTRIES_PER_BLK:  170 entries per FAT block (170 * 3 = 510 bytes)
+DIR_BLOCKS:           2 blocks for directory area (1024 bytes total)
+
+================================================================================
+DIRECTORY ENTRY STRUCTURE (26 bytes per entry)
+================================================================================
+
+Offset  Size  Description
+------  ----  -----------
+0       1     Entry metadata / type info
+1       1     File type code (see below)
+2-13    12    File name (space-padded ASCII)
+14-15   2     File size in blocks (big-endian)
+16-17   2     Contiguous block count (big-endian)
+18-21   4     Start block (big-endian, only 24 bits used)
+22      1     Multi-file index
+23-25   3     Reserved / byte count
+
+MAX_NUM_OF_DIR_ENTRIES: 39 entries per directory block pair (0-38)
+
+================================================================================
+FILE TYPE CODES (Byte 1 of directory entry)
+================================================================================
+
+Code  Hex   Type
+----  ----  ----
+0     0x00  Empty/Unused
+1     0x01  EPS Operating System
+2     0x02  Directory (subdirectory)
+3     0x03  EPS Instrument
+4     0x04  EPS Bank
+5     0x05  EPS Sequence
+6     0x06  EPS Song
+7     0x07  EPS System Exclusive (SysEx)
+8     0x08  Parent Directory
+9     0x09  EPS Macro
+
+EPS-16 Plus specific:
+23    0x17  EPS-16 Bank
+24    0x18  EPS-16 Effect
+25    0x19  EPS-16 Instrument (some sources say Bank)
+26    0x1A  EPS-16 Song
+27    0x1B  EPS-16 Operating System
+
+ASR specific:
+30    0x1E  ASR Bank
+32    0x20  ASR Operating System
+34    0x22  ASR Macro
+
+================================================================================
+ID BLOCK STRUCTURE (Block 1)
+================================================================================
+
+Offset  Size  Description
+------  ----  -----------
+0-3     4     Device/SCSI info
+4-5     2     Sectors per track (typically 10 for DD, 20 for HD)
+6-7     2     Number of heads (2)
+8-9     2     Number of tracks (80)
+10-13   4     Bytes per block (0x00000200 = 512)
+14-17   4     Total blocks (big-endian)
+18-29   12    Reserved
+30      1     Label flag (0xFF if label present)
+31-37   7     Disk label (ASCII, if flag is 0xFF)
+38-39   2     Signature "ID" (0x4944)
+
+================================================================================
+OS BLOCK STRUCTURE (Block 2)
+================================================================================
+
+Offset  Size  Description
+------  ----  -----------
+0-3     4     Free blocks count (big-endian) - note: may be 24-bit at offset 1
+4-27    24    Reserved / various metadata
+28-29   2     Signature "OS" (0x4F53)
+30+     -     Root directory entries start at offset 0x1E (30)
+
+================================================================================
+FAT (FILE ALLOCATION TABLE)
+================================================================================
+
+Entry size: 3 bytes (24-bit big-endian)
+Entries per block: 170 (170 * 3 = 510 bytes, leaving 2 for signature)
+
+Entry values:
+  0x000000 = Free/unallocated block
+  0x000001 = End of file (last block in chain)
+  0x000002 = Bad block
+  Other    = Next block number in chain
+
+FAT blocks start at block 5.
+Number of FAT blocks = ceil(total_blocks / 170)
+
+Each FAT block ends with signature "FB" (0x4642) at bytes 510-511.
+
+================================================================================
+DISK IMAGE SIZES
+================================================================================
+
+EPS (DD floppy):
+  819,200 bytes = 1,600 blocks
+  80 tracks × 2 heads × 10 sectors × 512 bytes
+
+ASR (HD floppy):
+  1,638,400 bytes = 3,200 blocks
+  80 tracks × 2 heads × 20 sectors × 512 bytes
+
+EPS16 SuperDisk:
+  2,611,200 bytes
+  255 tracks × 10 sectors × 2 heads? (extended format)
+
+ASR SuperDisk:
+  5,222,400 bytes
+  255 tracks × 20 sectors × 2 heads? (extended format)
+
+Hard Disk:
+  Variable size, up to 8GB (24-bit FAT limitation)
+  Same structure but with more blocks
+
+================================================================================
+BLOCK SIGNATURES
+================================================================================
+
+Block 0:   Filler pattern (0x6D/0xB6 alternating, or zeros)
+Block 1:   "ID" signature at bytes 38-39 (0x4944)
+Block 2:   "OS" signature at bytes 28-29 (0x4F53)
+Dir blocks: "DR" signature at bytes 510-511 (0x4452)
+FAT blocks: "FB" signature at bytes 510-511 (0x4642)
+
+================================================================================
+EFE FILE IMAGE FORMAT (Giebler format)
+================================================================================
+
+512-byte header followed by raw file data.
+
+Header structure:
+  Offset 0-1:   CR LF (0x0D 0x0A)
+  Offset 47-48: CR LF (0x0D 0x0A)
+  Offset 49:    EOF marker (0x1A)
+  Offset 50+:   Block skip table (indicates which blocks are all zeros)
+
+The skip table optimizes file size by not storing blocks that are all zeros.
+File extensions: .EFE (EPS), .EFA (ASR), .INS (alternate)
+
+================================================================================
+INSTRUMENT STRUCTURE (within file data)
+================================================================================
+
+An EPS Instrument contains:
+- Up to 8 Layers
+- Up to 127 Wavesamples total across all layers
+
+Layer structure:
+- Keymap across keyboard range
+- References to wavesamples
+- Patch select assignments (4 patches can select from 8 layers)
+
+Wavesample structure:
+- Sample data (13-bit for EPS, 16-bit for EPS-16/ASR)
+- Loop start point
+- Loop end point
+- Root note (original pitch)
+- Sample rate
+- Various modulation parameters

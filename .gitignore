@@ -1,0 +1,22 @@
+# Build artifacts
+*.o
+epstool
+
+# Disk images (large binary files)
+*.hda
+*.img
+*.iso
+*.ede
+*.eda
+*.bin
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
