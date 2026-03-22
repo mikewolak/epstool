@@ -22,7 +22,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <libgen.h>
 #include "epsfs.h"
+#include "efe_giebler.h"
 
 static void usage(const char *prog)
 {
@@ -33,18 +35,23 @@ static void usage(const char *prog)
     fprintf(stderr, "  mkimage <file> <size_mb> [--no-os]  - Create new disk image\n");
     fprintf(stderr, "\nImage operations: %s <image> <command> [args...]\n\n", prog);
     fprintf(stderr, "Commands:\n");
-    fprintf(stderr, "  info                    - Show disk information\n");
-    fprintf(stderr, "  ls [-v] [path]          - List directory contents\n");
-    fprintf(stderr, "  tree                    - Show directory tree\n");
-    fprintf(stderr, "  cat <file>              - Dump file contents to stdout\n");
-    fprintf(stderr, "  extract <file> <dest>   - Extract file to host filesystem\n");
-    fprintf(stderr, "  import <src> <name> <type> - Import file from host\n");
-    fprintf(stderr, "  mkdir <name>            - Create directory\n");
-    fprintf(stderr, "  rm <file>               - Delete file\n");
-    fprintf(stderr, "  hexdump <block>         - Dump block in hex\n");
-    fprintf(stderr, "  fat [start] [count]     - Show FAT entries\n");
+    fprintf(stderr, "  info                       - Show disk information\n");
+    fprintf(stderr, "  ls [-v] [path]             - List directory contents\n");
+    fprintf(stderr, "  tree                       - Show directory tree\n");
+    fprintf(stderr, "  cat <file>                 - Dump file contents to stdout\n");
+    fprintf(stderr, "  extract <file> <dest>      - Extract file to host filesystem\n");
+    fprintf(stderr, "  import <src> <name> <type> - Import raw file from host\n");
+    fprintf(stderr, "  import-efe <src> [path]    - Import EFE file (auto-detect format/type)\n");
+    fprintf(stderr, "  import-dir <src> <name>    - Recursively import directory of EFE files\n");
+    fprintf(stderr, "  mkdir <name>               - Create directory\n");
+    fprintf(stderr, "  rm <file>                  - Delete file\n");
+    fprintf(stderr, "  hexdump <block>            - Dump block in hex\n");
+    fprintf(stderr, "  fat [start] [count]        - Show FAT entries\n");
     fprintf(stderr, "\nFile types for import:\n");
     fprintf(stderr, "  inst, bank, seq, song, sysex, macro, effect\n");
+    fprintf(stderr, "\nExamples:\n");
+    fprintf(stderr, "  %s disk.hda import-efe sound.efe SOUNDS/     - Import to SOUNDS dir\n", prog);
+    fprintf(stderr, "  %s disk.hda import-dir ./factory FACTORY     - Import factory sounds\n", prog);
 }
 
 /* Forward declaration */
@@ -231,6 +238,74 @@ static int cmd_import(eps_fs_t *fs, const char *src, const char *dest_path, cons
     }
 
     printf("Imported %s as %s (%s)\n", src, dest_path, eps_type_name(type));
+    return 0;
+}
+
+static int cmd_import_efe(eps_fs_t *fs, const char *src, const char *dest_path)
+{
+    /* Navigate to parent directory */
+    uint32_t parent_dir = fs->root_dir_block;
+
+    if (dest_path && strlen(dest_path) > 0 && strcmp(dest_path, "/") != 0) {
+        parent_dir = navigate_path(fs, dest_path);
+        if (parent_dir == 0) {
+            fprintf(stderr, "Directory not found: %s\n", dest_path);
+            return 1;
+        }
+    }
+
+    char name[13];
+    eps_file_type_t type;
+
+    if (eps_import_efe(fs, parent_dir, src, name, &type) != 0) {
+        fprintf(stderr, "Failed to import: %s\n", src);
+        fprintf(stderr, "(File may not be Giebler format, or name already exists)\n");
+        return 1;
+    }
+
+    printf("Imported %s as %s (%s)\n", src, name, eps_type_name(type));
+    return 0;
+}
+
+static int cmd_import_dir(eps_fs_t *fs, const char *src_dir, const char *dest_path)
+{
+    /* Navigate to parent directory */
+    char *path_copy = strdup(dest_path);
+    char *last_slash = strrchr(path_copy, '/');
+
+    uint32_t parent_dir;
+    char name[13];
+
+    if (last_slash && last_slash != path_copy) {
+        *last_slash = '\0';
+        parent_dir = navigate_path(fs, path_copy);
+        strncpy(name, last_slash + 1, 12);
+        name[12] = '\0';
+    } else {
+        parent_dir = fs->root_dir_block;
+        /* Remove leading slash if present */
+        const char *n = dest_path;
+        if (n[0] == '/') n++;
+        strncpy(name, n, 12);
+        name[12] = '\0';
+    }
+
+    free(path_copy);
+
+    if (parent_dir == 0) {
+        fprintf(stderr, "Parent directory not found\n");
+        return 1;
+    }
+
+    printf("Importing %s to %s...\n", src_dir, dest_path);
+
+    int count = eps_import_dir(fs, parent_dir, src_dir, name, 1);
+    if (count < 0) {
+        fprintf(stderr, "Failed to import directory\n");
+        return 1;
+    }
+
+    printf("\nImported %d files to %s\n", count, dest_path);
     return 0;
 }
 
@@ -504,6 +579,24 @@ int main(int argc, char *argv[])
             result = 1;
         } else {
             result = cmd_import(fs, argv[3], argv[4], argv[5]);
+        }
+    }
+    else if (strcmp(command, "import-efe") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s %s import-efe <src.efe> [dest-path]\n", argv[0], argv[1]);
+            result = 1;
+        } else {
+            const char *dest = (argc >= 5) ? argv[4] : "/";
+            result = cmd_import_efe(fs, argv[3], dest);
+        }
+    }
+    else if (strcmp(command, "import-dir") == 0) {
+        if (argc < 5) {
+            fprintf(stderr, "Usage: %s %s import-dir <src-dir> <dest-name>\n", argv[0], argv[1]);
+            fprintf(stderr, "Example: %s %s import-dir ./factory FACTORY\n", argv[0], argv[1]);
+            result = 1;
+        } else {
+            result = cmd_import_dir(fs, argv[3], argv[4]);
         }
     }
     else if (strcmp(command, "mkdir") == 0) {

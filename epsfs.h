@@ -22,9 +22,9 @@
 /* Block layout (common to floppy and hard disk) */
 #define EPS_BLOCK_UNUSED        0       /* Block 0 - unused/signature */
 #define EPS_BLOCK_DEVICE_ID     1       /* Block 1 - device ID */
-#define EPS_BLOCK_OS            2       /* Block 2 - OS info + root directory */
-#define EPS_BLOCK_DIR_CONT      3       /* Block 3 - root directory continued */
-#define EPS_BLOCK_DIR_CONT2     4       /* Block 4 - root directory continued */
+#define EPS_BLOCK_OS            2       /* Block 2 - OS info (free blocks, etc.) */
+#define EPS_BLOCK_ROOT_DIR      3       /* Block 3 - root directory entries */
+#define EPS_BLOCK_ROOT_DIR2     4       /* Block 4 - root directory continued */
 #define EPS_BLOCK_FAT_START     5       /* Block 5+ - FAT blocks */
 
 /* Signatures (big-endian in file) */
@@ -115,15 +115,21 @@ typedef struct {
     bool     is_hard_disk;      /* true if > 1600 blocks */
     char     disk_label[12];    /* Disk label if present */
     bool     has_label;
+    /* FAT cache for performance */
+    uint8_t *fat_cache;         /* In-memory FAT cache */
+    bool     fat_dirty;         /* FAT cache needs flush */
+    uint32_t next_free_hint;    /* Hint for next free block search */
 } eps_fs_t;
 
 /* Directory handle for iteration */
 typedef struct {
     eps_fs_t *fs;
-    uint32_t  dir_block;        /* Current directory's first block */
-    uint32_t  current_block;    /* Current block being read */
-    int       entry_index;      /* Current entry within block */
+    uint32_t  dir_block;        /* Directory's first block */
+    uint32_t  second_block;     /* Directory's second block */
+    int       entry_index;      /* Current entry index (0-38) */
     int       entries_read;     /* Total entries read */
+    uint8_t   dir_buf[1024];    /* Full directory pair buffer (2 blocks) */
+    bool      loaded;           /* Buffer has been loaded */
 } eps_dir_t;
 
 /* File handle for reading/writing */
@@ -165,6 +171,12 @@ size_t eps_fread(void *buffer, size_t size, size_t count, eps_file_t *file);
 void eps_fclose(eps_file_t *file);
 int eps_extract(eps_fs_t *fs, uint32_t dir_block, const char *name, const char *dest_path);
 int eps_import(eps_fs_t *fs, uint32_t dir_block, const char *src_path, const char *name, eps_file_type_t type);
+
+/* Smart import functions (auto-detect Giebler format) */
+int eps_import_efe(eps_fs_t *fs, uint32_t dir_block, const char *src_path,
+                   char *name_out, eps_file_type_t *type_out);
+int eps_import_dir(eps_fs_t *fs, uint32_t parent_dir, const char *src_dir,
+                   const char *dest_name, int verbose);
 
 /* Utility functions */
 const char *eps_type_name(eps_file_type_t type);
