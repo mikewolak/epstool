@@ -1,0 +1,115 @@
+Giebler EFE/EFA File Format Specification
+==========================================
+Source: Chicken Systems, EpsLin source code, various
+
+Gary Giebler of Giebler Enterprises created this format for storing
+individual Ensoniq files outside of disk images.
+
+================================================================================
+FILE EXTENSIONS
+================================================================================
+
+EFE - Ensoniq EPS File (instruments, banks, sequences, etc.)
+EFA - Ensoniq ASR File (same format, different magic)
+INS - Identical to EFE (created by Michael Chen for EPSDisk)
+
+EDE - Giebler EPS Disk Image (1585 blocks max)
+EDA - Giebler ASR Disk Image (3167 blocks max)
+
+================================================================================
+GIEBLER EFE HEADER STRUCTURE (512 bytes)
+================================================================================
+
+Offset  Size  Description
+------  ----  -----------
+0x00    2     CR LF (0x0D 0x0A)
+0x02    16    Magic: "Eps File:       " or "Asr File:       "
+0x12    12    Filename (space-padded, from directory entry)
+0x1E    16    Type text (e.g., "Instr          ", "EPS-Bnk        ")
+0x2E    1     CR (0x0D)
+0x2F    1     LF (0x0A)
+0x30    1     EOF marker (0x1A)
+0x31    1     Padding (0x00)
+0x32    1     File type code (same as directory entry byte 1)
+0x33    1     Reserved (0x00)
+0x34    2     Size in blocks (big-endian)
+0x36    2     Contiguous blocks (big-endian)
+0x38    3     Start block from original disk (big-endian, 24-bit)
+0x3B    1     Multi-file index (for multi-disk files)
+0x3C    452   Zero padding to complete 512-byte header
+0x200   ...   Raw instrument data starts here
+
+================================================================================
+FILE TYPE CODES
+================================================================================
+
+Code  Text              Description
+----  ----              -----------
+0x00  (empty)           Unused entry
+0x01  EPS-OS            EPS Operating System
+0x02  Sub-Dir           Subdirectory
+0x03  Instr             Instrument
+0x04  EPS-Bnk           Bank
+0x05  Seq               Sequence
+0x06  Song              Song
+0x07  Sys-Ex            System Exclusive
+0x08  ParentDir         Parent directory pointer
+0x09  Macro             Macro file
+0x17  Effect            EPS-16+ Effect
+0x19  E16-Inst          EPS-16+ Instrument
+0x1A  E16-Bnk           EPS-16+ Bank
+0x1B  E16-OS            EPS-16+ Operating System
+
+================================================================================
+TYPE TEXT STRINGS (16 bytes, space-padded)
+================================================================================
+
+"EPS-OS         " - Operating System
+"Sub-Dir        " - Subdirectory
+"Instr          " - Instrument
+"EPS-Bnk        " - Bank
+"Seq            " - Sequence
+"Song           " - Song
+"Sys-Ex         " - System Exclusive
+"Macro          " - Macro
+"Effect         " - Effect
+
+================================================================================
+GIEBLER DISK IMAGE FORMAT (EDE/EDA)
+================================================================================
+
+Disk images have a similar 512-byte header but include a "skip table"
+for compression (skipping empty blocks):
+
+EDE (EPS):
+  - Skip table starts at offset 0xA0 (160)
+  - Skip table size: 200 bytes (covers 1600 blocks)
+  - Each bit indicates if corresponding block is empty
+
+EDA (ASR):
+  - Skip table starts at offset 0x60 (96)
+  - Skip table size: 400 bytes (covers 3200 blocks)
+
+================================================================================
+COMPARISON: GKH FORMAT
+================================================================================
+
+GKH format (Goh King Wah) is simpler:
+  - 58-byte header only
+  - No skip table
+  - Raw disk image follows immediately
+  - Not block-aligned
+
+================================================================================
+CONVERSION NOTES
+================================================================================
+
+To convert Giebler EFE to raw EPS format:
+  - Skip first 512 bytes (header)
+  - Remaining data is raw instrument
+
+To convert raw EPS to Giebler EFE:
+  - Build 512-byte header
+  - Append raw instrument data
+
+The raw data size = (size_blocks * 512) bytes

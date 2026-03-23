@@ -119,6 +119,8 @@ typedef struct {
     uint8_t *fat_cache;         /* In-memory FAT cache */
     bool     fat_dirty;         /* FAT cache needs flush */
     uint32_t next_free_hint;    /* Hint for next free block search */
+    /* Disk ID for bank file patching */
+    uint8_t  disk_id[4];        /* 4-byte disk identifier */
 } eps_fs_t;
 
 /* Directory handle for iteration */

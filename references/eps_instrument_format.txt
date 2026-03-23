@@ -1,0 +1,170 @@
+EPS Instrument File Format - Reverse Engineering Notes
+======================================================
+Created: 2025-03-23
+Source: Analysis of factory sound files from Ensoniq EPS
+
+This document describes the internal structure of EPS instrument files,
+reverse-engineered from Giebler EFE files containing factory sounds.
+
+
+1. FILE STRUCTURE OVERVIEW
+==========================
+
+A Giebler EFE file consists of:
+- 512-byte Giebler header (described in giebler_disk_formats_summary.txt)
+- Raw EPS instrument data (starts at offset 0x200)
+
+The raw instrument data has this general layout:
+
+Offset (raw)  Size    Description
+-----------   ----    -----------
+0x000-0x007   8       Instrument flags/header
+0x008-0x01B   20      Instrument name (UTF-16LE, 12 chars max)
+0x01C-0x027   12      Unknown parameters
+0x028-0x02F   8       Memory/sample info
+0x030-0x065   54      Unknown parameters
+0x066-0x085   32      Layer 1 allocation table (if multi-layer)
+0x086-0x0FF   122     Wavesample allocation table
+0x100-0x27F   384     Unknown/reserved
+0x280-0x37F   256     Layer 1 header
+0x370-0x48F   288     Wavesample parameter block
+0x490+        varies  Sample data (for single-wavesample instruments)
+
+
+2. INSTRUMENT HEADER (0x000-0x027)
+==================================
+
+Offset  Size  Type      Description
+------  ----  ----      -----------
+0x008   2     uint16    First char of name + flags in high byte
+0x00A   24    UTF-16LE  Instrument name (12 chars, space-padded)
+0x024   2     uint16    Unknown flags
+0x026   2     uint16    Unknown flags
+0x028   2     uint16    Memory/block info
+
+
+3. WAVESAMPLE ALLOCATION TABLE (0x086-0x0FF)
+============================================
+
+For multi-wavesample instruments, this table contains entries for each
+wavesample. Each entry is 4 bytes:
+
+Offset  Size  Type      Description
+------  ----  ----      -----------
++0x00   2     uint16LE  Start block number (512-byte blocks from raw data start)
++0x02   2     uint16LE  Block count
+
+The wavesample index in this table corresponds to wavesample numbers
+used in the key mapping. Entry 0 is typically empty (index 0 unused).
+
+Example from JAZZ KIT 496:
+  Entry 1: block 55, count 4  -> WS1: 2048 bytes at offset 0x6E00 (raw)
+  Entry 2: block 22, count 1  -> WS2: 512 bytes at offset 0x2C00
+  Entry 3: block 220, count 7 -> WS3: 3584 bytes at offset 0x1B800
+  Entry 4: block 138, count 8 -> WS4: 4096 bytes at offset 0x11400
+  ...
+
+For single-wavesample instruments, this table may contain different data
+(possibly loop points or layer info), and the sample data is located
+contiguously starting around offset 0x490.
+
+
+4. LAYER HEADER (0x280-0x37F)
+=============================
+
+Offset  Size  Type      Description
+------  ----  ----      -----------
+0x298   2     uint16LE  Number of wavesamples in layer
+0x29A   24    UTF-16LE  Layer name (12 chars, typically "UNNAMEDLAYER")
+0x2C0   256   byte[128] Key-to-wavesample mapping (2 bytes per key)
+
+Key Mapping Format:
+  Each MIDI key (0-127) has a 2-byte entry at offset 0x2C0 + key * 2.
+  The low byte is the wavesample index (1-based) for that key.
+  Value 0 means no sample assigned to that key.
+
+Example key mapping from drum kit:
+  Keys 0-15:   WS 1 (bass drum)
+  Keys 16-17:  WS 3 (snare)
+  Keys 18-19:  WS 2 (rim shot)
+  Keys 20-23:  WS 4 (tom)
+  Keys 24-26:  WS 10 (hi-hat)
+  etc.
+
+
+5. WAVESAMPLE PARAMETER BLOCK (0x370-0x48F)
+==========================================
+
+This block contains parameters for wavesamples. The exact structure
+varies between instruments.
+
+Offset  Size  Type      Description
+------  ----  ----      -----------
+0x370   1     byte      Flags/sample rate code (unclear encoding)
+0x371   1     byte      Unknown
+0x372   2     uint16BE  Unknown (possibly sample count high bits?)
+0x374   4     -         Unknown
+0x378   2     -         Unknown
+0x37A   24    UTF-16LE  Wavesample name (typically "UNNAMED WS")
+0x392+  -     -         Envelope, filter, and modulation parameters
+
+
+6. SAMPLE DATA
+==============
+
+Format: 16-bit signed, big-endian
+Sample rates: 52000, 39000, 31200, 26000, 19500, 15600, 13000, 9750, 7800, 6250 Hz
+
+For single-wavesample instruments:
+  Sample data typically starts at raw offset 0x490.
+  Continues to end of file.
+
+For multi-wavesample instruments:
+  Sample data is scattered at block locations specified in the
+  allocation table (0x086+).
+  Each wavesample's data is at: start_block * 512 bytes from raw data start.
+
+
+7. FILE TYPE CODES (from Giebler header)
+========================================
+
+0x00 = Unused/Blank
+0x01 = EPS Operating System
+0x02 = Sub-Directory
+0x03 = EPS Individual Instrument  <-- This document
+0x04 = EPS Bank of Sounds
+0x05 = EPS Sequence File
+0x06 = EPS Song File
+0x07 = EPS System Exclusive File
+0x09 = EPS Macro File
+0x17 = EPS-16 Plus Effect File
+0x18 = EPS-16 Plus Sequence File
+0x19 = EPS-16 Plus Song File
+0x1A = EPS-16 Plus OS
+
+
+8. KNOWN LIMITATIONS
+====================
+
+- Sample rate code encoding not fully decoded. Currently defaults to 26kHz.
+- Root key per wavesample not yet extracted. Defaults to C4 (MIDI 60).
+- Loop point extraction not implemented.
+- Fine tuning not extracted.
+- Multi-layer instruments not fully parsed (only layer 1).
+
+
+9. TOOLS
+========
+
+epstool inst-info <file>    - Display instrument structure
+epstool export-wav <file> <outdir> - Export wavesamples as WAV files
+
+
+10. REFERENCES
+==============
+
+- Giebler Enterprises disk format documentation
+- https://www.deepsonic.ch/deep/docs_manuals/ensoniq_floppy_diskette_formats.pdf
+- https://zine.r-massive.com/ensoniq-technical-documents-and-schematics/
+- EpsLin Neo source code: https://github.com/handsthatstrike/EpsLinNeo
+

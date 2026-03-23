@@ -87,6 +87,12 @@ int efe_giebler_get_header(efe_giebler_t *efe, efe_giebler_header_t *header);
 /* Get underlying raw instrument data */
 efe_raw_t *efe_giebler_get_raw(efe_giebler_t *efe);
 
+/* Get raw data pointer and size */
+const uint8_t *efe_giebler_get_raw_data(efe_giebler_t *efe, size_t *size);
+
+/* Get file type code */
+uint8_t efe_giebler_get_type(efe_giebler_t *efe);
+
 /* Get instrument info (wraps raw) */
 int efe_giebler_get_info(efe_giebler_t *efe, efe_raw_info_t *info);
 

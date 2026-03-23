@@ -129,13 +129,16 @@ eps_fs_t *eps_open(const char *filename)
         }
     }
 
-    /* Read block 2 (OS block) for free block count */
+    /* Read block 2 (OS block) for free block count and disk ID */
     if (eps_read_block(fs, EPS_BLOCK_OS, block) == 0) {
         /* Free blocks stored at offset 0x00-0x02 as 24-bit big-endian */
         /* Combined with byte at 0x02-0x03 */
         /* Format appears to be: [high 8 bits at 0x01] [low 16 bits at 0x02-0x03] */
         /* Or simply 24-bit at offset 0x01 */
         fs->free_blocks = eps_read_be24(&block[0x01]);
+
+        /* Disk ID is at offset 0x04-0x07 in OS block */
+        memcpy(fs->disk_id, &block[0x04], 4);
     }
 
     /*
@@ -669,6 +672,8 @@ void eps_print_info(eps_fs_t *fs)
     printf("Ensoniq EPS Filesystem\n");
     printf("======================\n");
     printf("Image file:     %s\n", fs->filename);
+    printf("Disk ID:        %02X %02X %02X %02X\n",
+           fs->disk_id[0], fs->disk_id[1], fs->disk_id[2], fs->disk_id[3]);
     printf("Total blocks:   %u (%u KB / %u MB)\n", fs->total_blocks,
            (fs->total_blocks * EPS_BLOCK_SIZE) / 1024,
            (fs->total_blocks * EPS_BLOCK_SIZE) / (1024 * 1024));
@@ -966,6 +971,26 @@ int eps_import_efe(eps_fs_t *fs, uint32_t dir_block, const char *src_path,
             size_t to_copy = raw_size - offset;
             if (to_copy > EPS_BLOCK_SIZE) to_copy = EPS_BLOCK_SIZE;
             memcpy(buffer, raw_data + offset, to_copy);
+
+            /* For bank files, patch the disk ID in the first block */
+            if (i == 0 && (type == EPS_TYPE_BANK || type == EPS_TYPE_EPS16_BANK)) {
+                /* Bank format: bytes 4-7 contain source disk ID */
+                uint8_t old_id[4];
+                memcpy(old_id, &buffer[4], 4);
+
+                /* Report disk ID change - zero it out to mean "any disk" */
+                if (old_id[0] != 0 || old_id[1] != 0 || old_id[2] != 0 || old_id[3] != 0) {
+                    fprintf(stderr, "  Bank disk ID: %02X%02X%02X%02X -> 00000000 (cleared)\n",
+                            old_id[0], old_id[1], old_id[2], old_id[3]);
+                }
+
+                /* Clear disk ID - zeros may mean "any disk" */
+                buffer[4] = 0x00;
+                buffer[5] = 0x00;
+                buffer[6] = 0x00;
+                buffer[7] = 0x00;
+            }
+
             eps_write_block(fs, block_list[i], buffer);
         }
 
@@ -1024,8 +1049,41 @@ int eps_import_efe(eps_fs_t *fs, uint32_t dir_block, const char *src_path,
 }
 
 /*
+ * Extract slot number from Giebler filename like "[01][Instr] NAME.efe"
+ * Returns slot number (1-39) or 99 if no slot prefix found.
+ */
+static int extract_slot_number(const char *filename)
+{
+    if (filename[0] == '[' && filename[3] == ']') {
+        int slot = (filename[1] - '0') * 10 + (filename[2] - '0');
+        if (slot >= 1 && slot <= 39) {
+            return slot;
+        }
+    }
+    return 99;  /* No valid slot - sort to end */
+}
+
+/*
+ * Comparison function for scandir() - sorts by [NN] slot prefix.
+ * Files with [NN] prefix come first in slot order.
+ * Files without prefix come last in alphabetical order.
+ */
+static int slot_compare(const struct dirent **a, const struct dirent **b)
+{
+    int slot_a = extract_slot_number((*a)->d_name);
+    int slot_b = extract_slot_number((*b)->d_name);
+
+    if (slot_a != slot_b) {
+        return slot_a - slot_b;
+    }
+    /* Same slot or both no slot - sort alphabetically */
+    return strcmp((*a)->d_name, (*b)->d_name);
+}
+
+/*
  * Recursively import a directory of EFE files.
  * Creates subdirectories as needed.
+ * Files are sorted by [NN] slot prefix to preserve BANK file references.
  * Returns count of files imported, or -1 on error.
  */
 int eps_import_dir(eps_fs_t *fs, uint32_t parent_dir, const char *src_dir,
@@ -1049,16 +1107,19 @@ int eps_import_dir(eps_fs_t *fs, uint32_t parent_dir, const char *src_dir,
     }
     uint32_t new_dir_block = dir_entry->first_block;
 
-    /* Open source directory */
-    DIR *dp = opendir(src_dir);
-    if (!dp) return -1;
+    /* Scan and sort directory entries by slot number */
+    struct dirent **namelist;
+    int n = scandir(src_dir, &namelist, NULL, slot_compare);
+    if (n < 0) return -1;
 
     int imported = 0;
-    struct dirent *entry;
 
-    while ((entry = readdir(dp)) != NULL) {
+    for (int i = 0; i < n; i++) {
+        struct dirent *entry = namelist[i];
+
         /* Skip . and .. */
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            free(entry);
             continue;
         }
 
@@ -1067,7 +1128,10 @@ int eps_import_dir(eps_fs_t *fs, uint32_t parent_dir, const char *src_dir,
         snprintf(path, sizeof(path), "%s/%s", src_dir, entry->d_name);
 
         struct stat st;
-        if (stat(path, &st) != 0) continue;
+        if (stat(path, &st) != 0) {
+            free(entry);
+            continue;
+        }
 
         if (S_ISDIR(st.st_mode)) {
             /* Recursively import subdirectory */
@@ -1099,9 +1163,10 @@ int eps_import_dir(eps_fs_t *fs, uint32_t parent_dir, const char *src_dir,
                 }
             }
         }
+        free(entry);
     }
 
-    closedir(dp);
+    free(namelist);
     return imported;
 }
 
@@ -1203,7 +1268,8 @@ int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
     block[0x01] = (free_blocks >> 16) & 0xFF;
     block[0x02] = (free_blocks >> 8) & 0xFF;
     block[0x03] = free_blocks & 0xFF;
-    /* Geometry flags at 0x04-0x07 (0x02 0x31 0x01 0x00 in reference) */
+    /* Disk ID at 0x04-0x07 - format version/geometry flags */
+    /* Original value from reference disk images */
     block[0x04] = 0x02;
     block[0x05] = 0x31;
     block[0x06] = 0x01;

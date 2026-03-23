@@ -25,6 +25,7 @@
 #include <libgen.h>
 #include "epsfs.h"
 #include "efe_giebler.h"
+#include "efe_raw.h"
 
 static void usage(const char *prog)
 {
@@ -47,6 +48,10 @@ static void usage(const char *prog)
     fprintf(stderr, "  rm <file>                  - Delete file\n");
     fprintf(stderr, "  hexdump <block>            - Dump block in hex\n");
     fprintf(stderr, "  fat [start] [count]        - Show FAT entries\n");
+    fprintf(stderr, "  validate-bank <path>       - Validate bank file references\n");
+    fprintf(stderr, "  validate-banks [path]      - Validate all banks in directory\n");
+    fprintf(stderr, "  inst-info <file.efe>       - Show instrument structure (Giebler format)\n");
+    fprintf(stderr, "  export-wav <file.efe> <outdir> - Export wavesamples to WAV files\n");
     fprintf(stderr, "\nFile types for import:\n");
     fprintf(stderr, "  inst, bank, seq, song, sysex, macro, effect\n");
     fprintf(stderr, "\nExamples:\n");
@@ -448,6 +453,403 @@ static int cmd_fat(eps_fs_t *fs, uint32_t start, uint32_t count)
     return 0;
 }
 
+/*
+ * Bank validation - check all instrument references in bank files
+ *
+ * Raw disk bank format (EPS):
+ *   0x00-0x07: Header bytes
+ *   0x08-0x1F: Bank name (12 chars, interleaved with spaces/zeros)
+ *   0x20: Instrument mask (bit 0=inst 1 valid, bit 7=inst 8 valid)
+ *   0x22+: 8 instrument entries (16 bytes each for EPS)
+ *
+ * Each instrument entry (EPS, 16 bytes):
+ *   byte 0: Path depth (0=same dir, 1-5=subdirectory levels, 0x80+=copy of)
+ *   byte 2: Device (0=floppy)
+ *   byte 6: File index in directory
+ */
+static int cmd_validate_bank(eps_fs_t *fs, const char *path)
+{
+    /* Navigate to parent directory and find the bank file */
+    char *path_copy = strdup(path);
+    char *last_slash = strrchr(path_copy, '/');
+
+    uint32_t parent_dir;
+    char bank_name[13];
+
+    if (last_slash && last_slash != path_copy) {
+        *last_slash = '\0';
+        parent_dir = navigate_path(fs, path_copy);
+        strncpy(bank_name, last_slash + 1, 12);
+        bank_name[12] = '\0';
+    } else {
+        parent_dir = fs->root_dir_block;
+        const char *n = (path[0] == '/') ? path + 1 : path;
+        strncpy(bank_name, n, 12);
+        bank_name[12] = '\0';
+    }
+    free(path_copy);
+
+    if (parent_dir == 0) {
+        fprintf(stderr, "Parent directory not found\n");
+        return 1;
+    }
+
+    /* Find the bank file */
+    eps_dir_entry_t *bank_entry = eps_find_entry(fs, parent_dir, bank_name);
+    if (!bank_entry) {
+        fprintf(stderr, "Bank file not found: %s\n", bank_name);
+        return 1;
+    }
+
+    if (bank_entry->file_type != EPS_TYPE_BANK) {
+        fprintf(stderr, "Not a bank file (type=%d)\n", bank_entry->file_type);
+        return 1;
+    }
+
+    /* Read the bank file data */
+    uint8_t bank_data[1024];
+    uint32_t block = bank_entry->first_block;
+    int offset = 0;
+
+    while (block != EPS_FAT_END && block != EPS_FAT_FREE && offset < 1024) {
+        uint8_t buf[512];
+        if (eps_read_block(fs, block, buf) != 0) {
+            fprintf(stderr, "Failed to read bank data\n");
+            return 1;
+        }
+        int to_copy = (1024 - offset > 512) ? 512 : (1024 - offset);
+        memcpy(bank_data + offset, buf, to_copy);
+        offset += to_copy;
+        block = eps_fat_read(fs, block);
+    }
+
+    printf("Bank: %s\n", bank_name);
+
+    /* Bank name at 0x08-0x1F (interleaved with spaces) */
+    printf("Bank Name: ");
+    for (int i = 0x08; i < 0x20; i += 2) {
+        if (bank_data[i] >= 32 && bank_data[i] < 127)
+            putchar(bank_data[i]);
+    }
+    printf("\n");
+
+    /* Instrument mask at 0x20 */
+    uint8_t inst_mask = bank_data[0x20];
+    printf("Inst Mask: 0x%02X (", inst_mask);
+    for (int i = 7; i >= 0; i--) {
+        putchar((inst_mask >> i) & 1 ? '1' : '0');
+    }
+    printf(")\n\n");
+
+    /* Build directory listing for validation */
+    eps_dir_t *dir = eps_opendir(fs, parent_dir);
+    if (!dir) {
+        fprintf(stderr, "Failed to open directory for validation\n");
+        return 1;
+    }
+
+    /* Collect directory entries */
+    eps_dir_entry_t entries[39];
+    int entry_count = 0;
+    eps_dir_entry_t *e;
+    while ((e = eps_readdir(dir)) != NULL && entry_count < 39) {
+        memcpy(&entries[entry_count], e, sizeof(eps_dir_entry_t));
+        entry_count++;
+    }
+    eps_closedir(dir);
+
+    /* Validate each instrument entry (16 bytes each starting at 0x22) */
+    int all_valid = 1;
+
+    for (int inst = 0; inst < 8; inst++) {
+        printf("Inst %d: ", inst + 1);
+
+        /* Check if this instrument slot is valid */
+        if (!((inst_mask >> inst) & 1)) {
+            printf("(empty)\n");
+            continue;
+        }
+
+        uint8_t *inst_data = &bank_data[0x22 + inst * 16];
+        uint8_t path_depth = inst_data[0];
+
+        if (path_depth >= 0x80) {
+            /* Copy of another instrument */
+            int copy_of = (path_depth & 0x0F) + 1;
+            printf("Copy of Inst %d\n", copy_of);
+            continue;
+        }
+
+        if (path_depth == 0x7F) {
+            printf("(deleted)\n");
+            continue;
+        }
+
+        /* File index is at byte 4 of the entry */
+        uint8_t file_idx = inst_data[4];
+
+        /* For path_depth > 0, we'd need to follow subdirectories */
+        if (path_depth > 0) {
+            printf("Path depth %d - subdirectory reference (idx=%d", path_depth, inst_data[4]);
+            for (int p = 1; p <= path_depth; p++) {
+                printf("/%d", inst_data[4 + 2*p]);
+            }
+            printf(") - NOT VALIDATED\n");
+            continue;
+        }
+
+        /* path_depth == 0: file is in same directory as bank */
+        printf("Slot %d -> ", file_idx);
+
+        /* Validate: find entry at slot file_idx */
+        if (file_idx >= entry_count) {
+            printf("INVALID (slot %d doesn't exist, only %d entries)\n",
+                   file_idx, entry_count);
+            all_valid = 0;
+            continue;
+        }
+
+        eps_dir_entry_t *target = &entries[file_idx];
+        char name[13];
+        eps_format_filename(target->filename, name);
+
+        /* Check if it's an instrument */
+        if (target->file_type == EPS_TYPE_INSTRUMENT ||
+            target->file_type == EPS_TYPE_EPS16_INST) {
+            printf("'%s' (%s) - OK\n", name, eps_type_name(target->file_type));
+        } else if (target->file_type == EPS_TYPE_PARENT_DIR) {
+            printf("INVALID (points to parent dir at slot %d)\n", file_idx);
+            all_valid = 0;
+        } else {
+            printf("'%s' (%s) - WARNING: not an instrument\n",
+                   name, eps_type_name(target->file_type));
+        }
+    }
+
+    /* Validate song entry (entry 9, at offset 0xA2) */
+    printf("Song:   ");
+    uint8_t *song_data = &bank_data[0xA2];
+    uint8_t song_path_depth = song_data[0];
+
+    if (song_path_depth >= 0x80) {
+        printf("(none)\n");
+    } else if (song_path_depth == 0x7F) {
+        printf("(deleted)\n");
+    } else {
+        uint8_t song_idx = song_data[4];
+
+        if (song_path_depth > 0) {
+            printf("Path depth %d - subdirectory reference (idx=%d", song_path_depth, song_data[4]);
+            for (int p = 1; p <= song_path_depth; p++) {
+                printf("/%d", song_data[4 + 2*p]);
+            }
+            printf(") - NOT VALIDATED\n");
+        } else {
+            printf("Slot %d -> ", song_idx);
+
+            if (song_idx >= entry_count) {
+                printf("INVALID (slot %d doesn't exist, only %d entries)\n",
+                       song_idx, entry_count);
+                all_valid = 0;
+            } else {
+                eps_dir_entry_t *target = &entries[song_idx];
+                char name[13];
+                eps_format_filename(target->filename, name);
+
+                if (target->file_type == EPS_TYPE_SONG ||
+                    target->file_type == EPS_TYPE_SONG_VFX ||
+                    target->file_type == EPS_TYPE_SEQUENCE ||
+                    target->file_type == EPS_TYPE_SEQ_VFX) {
+                    printf("'%s' (%s) - OK\n", name, eps_type_name(target->file_type));
+                } else if (target->file_type == EPS_TYPE_PARENT_DIR) {
+                    printf("INVALID (points to parent dir)\n");
+                    all_valid = 0;
+                } else {
+                    printf("'%s' (%s) - WARNING: not a song/sequence\n",
+                           name, eps_type_name(target->file_type));
+                }
+            }
+        }
+    }
+
+    printf("\n");
+    if (all_valid) {
+        printf("Result: All bank references are VALID\n");
+    } else {
+        printf("Result: Some bank references are INVALID\n");
+    }
+
+    return all_valid ? 0 : 1;
+}
+
+/*
+ * Validate all bank files in a directory recursively
+ */
+static int cmd_validate_banks(eps_fs_t *fs, uint32_t dir_block, const char *path_prefix)
+{
+    eps_dir_t *dir = eps_opendir(fs, dir_block);
+    if (!dir) {
+        fprintf(stderr, "Failed to open directory\n");
+        return 1;
+    }
+
+    int total_banks = 0;
+    int valid_banks = 0;
+    eps_dir_entry_t *entry;
+
+    /* First pass: collect all entries (skip parent dir) */
+    eps_dir_entry_t entries[39];
+    int entry_count = 0;
+    while ((entry = eps_readdir(dir)) != NULL && entry_count < 39) {
+        if (entry->file_type != EPS_TYPE_PARENT_DIR) {
+            memcpy(&entries[entry_count], entry, sizeof(eps_dir_entry_t));
+            entry_count++;
+        }
+    }
+    eps_closedir(dir);
+
+    /* Process entries */
+    for (int i = 0; i < entry_count; i++) {
+        entry = &entries[i];
+        char name[13];
+        eps_format_filename(entry->filename, name);
+
+        if (entry->file_type == EPS_TYPE_SUBDIR) {
+            /* Recurse into subdirectory */
+            char subpath[256];
+            snprintf(subpath, sizeof(subpath), "%s/%s", path_prefix, name);
+            int sub_result = cmd_validate_banks(fs, entry->first_block, subpath);
+            if (sub_result > 0) {
+                total_banks += sub_result >> 16;
+                valid_banks += sub_result & 0xFFFF;
+            }
+        } else if (entry->file_type == EPS_TYPE_BANK) {
+            /* Validate this bank */
+            char bank_path[256];
+            snprintf(bank_path, sizeof(bank_path), "%s/%s", path_prefix, name);
+
+            printf("=== Validating %s ===\n", bank_path);
+            int result = cmd_validate_bank(fs, bank_path);
+            total_banks++;
+            if (result == 0) valid_banks++;
+            printf("\n");
+        }
+    }
+
+    /* Return combined count */
+    return (total_banks << 16) | valid_banks;
+}
+
+/*
+ * Show instrument information from a Giebler format EFE file
+ */
+static int cmd_inst_info(const char *efe_path)
+{
+    /* Check if it's Giebler format */
+    if (!efe_giebler_is_giebler(efe_path)) {
+        fprintf(stderr, "Not a Giebler format EFE file: %s\n", efe_path);
+        fprintf(stderr, "Try using a .efe file with Giebler header\n");
+        return 1;
+    }
+
+    /* Open Giebler file to get raw data offset */
+    efe_giebler_t *giebler = efe_giebler_open(efe_path);
+    if (!giebler) {
+        fprintf(stderr, "Failed to open EFE file: %s\n", efe_path);
+        return 1;
+    }
+
+    /* Get raw data */
+    size_t raw_size;
+    const uint8_t *raw_data = efe_giebler_get_raw_data(giebler, &raw_size);
+
+    if (!raw_data || raw_size < 512) {
+        fprintf(stderr, "File too small or invalid\n");
+        efe_giebler_close(giebler);
+        return 1;
+    }
+
+    /* Check file type from Giebler header */
+    uint8_t file_type = efe_giebler_get_type(giebler);
+    if (file_type != 0x03 && file_type != 0x18) {
+        fprintf(stderr, "Not an instrument file (type 0x%02X)\n", file_type);
+        efe_giebler_close(giebler);
+        return 1;
+    }
+
+    /* Parse as raw instrument */
+    efe_raw_t *efe = efe_raw_open_mem(raw_data, raw_size);
+    if (!efe) {
+        fprintf(stderr, "Failed to parse instrument\n");
+        efe_giebler_close(giebler);
+        return 1;
+    }
+
+    /* Print detailed report */
+    efe_raw_print_report(efe);
+
+    efe_raw_close(efe);
+    efe_giebler_close(giebler);
+    return 0;
+}
+
+/*
+ * Export wavesamples from instrument to WAV files
+ */
+static int cmd_export_wav(const char *efe_path, const char *output_dir)
+{
+    /* Check if it's Giebler format */
+    if (!efe_giebler_is_giebler(efe_path)) {
+        fprintf(stderr, "Not a Giebler format EFE file: %s\n", efe_path);
+        return 1;
+    }
+
+    /* Open Giebler file */
+    efe_giebler_t *giebler = efe_giebler_open(efe_path);
+    if (!giebler) {
+        fprintf(stderr, "Failed to open EFE file: %s\n", efe_path);
+        return 1;
+    }
+
+    /* Get raw data */
+    size_t raw_size;
+    const uint8_t *raw_data = efe_giebler_get_raw_data(giebler, &raw_size);
+
+    if (!raw_data || raw_size < 512) {
+        fprintf(stderr, "File too small or invalid\n");
+        efe_giebler_close(giebler);
+        return 1;
+    }
+
+    /* Check file type */
+    uint8_t file_type = efe_giebler_get_type(giebler);
+    if (file_type != 0x03 && file_type != 0x18) {
+        fprintf(stderr, "Not an instrument file (type 0x%02X)\n", file_type);
+        efe_giebler_close(giebler);
+        return 1;
+    }
+
+    /* Parse as raw instrument */
+    efe_raw_t *efe = efe_raw_open_mem(raw_data, raw_size);
+    if (!efe) {
+        fprintf(stderr, "Failed to parse instrument\n");
+        efe_giebler_close(giebler);
+        return 1;
+    }
+
+    /* Print info */
+    printf("Instrument: %s\n", efe->info.name);
+    printf("Wavesamples: %d\n\n", efe->info.num_wavesamples);
+
+    /* Extract all wavesamples */
+    int count = efe_raw_extract_all_wav(efe, output_dir);
+
+    efe_raw_close(efe);
+    efe_giebler_close(giebler);
+
+    return (count > 0) ? 0 : 1;
+}
+
 /* Navigate to a path and return the directory block */
 static uint32_t navigate_path(eps_fs_t *fs, const char *path)
 {
@@ -513,6 +915,23 @@ int main(int argc, char *argv[])
         }
 
         return eps_mkimage(filename, size_mb, include_os);
+    }
+
+    /* Handle standalone EFE file commands - don't need disk image */
+    if (strcmp(argv[1], "inst-info") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "Usage: %s inst-info <file.efe>\n", argv[0]);
+            return 1;
+        }
+        return cmd_inst_info(argv[2]);
+    }
+
+    if (strcmp(argv[1], "export-wav") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s export-wav <file.efe> <output-dir>\n", argv[0]);
+            return 1;
+        }
+        return cmd_export_wav(argv[2], argv[3]);
     }
 
     if (argc < 3) {
@@ -632,6 +1051,54 @@ int main(int argc, char *argv[])
 
         result = cmd_fat(fs, start, count);
     }
+    else if (strcmp(command, "validate-bank") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s %s validate-bank <path/to/bank>\n", argv[0], argv[1]);
+            result = 1;
+        } else {
+            result = cmd_validate_bank(fs, argv[3]);
+        }
+    }
+    else if (strcmp(command, "validate-banks") == 0) {
+        const char *path = (argc >= 4) ? argv[3] : "/";
+        uint32_t dir_block = navigate_path(fs, path);
+        if (dir_block == 0) {
+            result = 1;
+        } else {
+            int counts = cmd_validate_banks(fs, dir_block, path);
+            int total = counts >> 16;
+            int valid = counts & 0xFFFF;
+            printf("=== SUMMARY ===\n");
+            printf("Total banks: %d\n", total);
+            printf("Valid banks: %d\n", valid);
+            printf("Invalid banks: %d\n", total - valid);
+            result = (valid == total) ? 0 : 1;
+        }
+    }
+    else if (strcmp(command, "inst-info") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s %s inst-info <file.efe>\n", argv[0], argv[1]);
+            result = 1;
+        } else {
+            /* Note: This command works directly on EFE files, not image contents */
+            eps_close(fs);
+            fs = NULL;
+            result = cmd_inst_info(argv[3]);
+            goto done;
+        }
+    }
+    else if (strcmp(command, "export-wav") == 0) {
+        if (argc < 5) {
+            fprintf(stderr, "Usage: %s %s export-wav <file.efe> <output-dir>\n", argv[0], argv[1]);
+            result = 1;
+        } else {
+            /* Note: This command works directly on EFE files, not image contents */
+            eps_close(fs);
+            fs = NULL;
+            result = cmd_export_wav(argv[3], argv[4]);
+            goto done;
+        }
+    }
     else {
         fprintf(stderr, "Unknown command: %s\n", command);
         usage(argv[0]);
@@ -640,5 +1107,6 @@ int main(int argc, char *argv[])
 
 cleanup:
     eps_close(fs);
+done:
     return result;
 }

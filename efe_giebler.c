@@ -201,6 +201,21 @@ int efe_giebler_get_info(efe_giebler_t *efe, efe_raw_info_t *info) {
     return efe_raw_get_info(efe->raw, info);
 }
 
+/* Get raw data pointer and size */
+const uint8_t *efe_giebler_get_raw_data(efe_giebler_t *efe, size_t *size) {
+    if (!efe || !efe->raw) {
+        if (size) *size = 0;
+        return NULL;
+    }
+    return efe_raw_get_data(efe->raw, size);
+}
+
+/* Get file type code */
+uint8_t efe_giebler_get_type(efe_giebler_t *efe) {
+    if (!efe) return 0;
+    return efe->header.file_type;
+}
+
 /* Get file type name */
 static const char *get_type_name(uint8_t type) {
     switch (type) {

@@ -1,0 +1,102 @@
+Ensoniq Floppy Diskette Formats - Summary
+by Gary Giebler (from PDF archived 2025-03-22)
+
+================================================================================
+KEY FINDINGS FOR EPS vs EPS-16+ FILE TYPES
+================================================================================
+
+The original Giebler document defines these file type codes:
+
+00 (0x00) = Unused (or Blank)
+01 (0x01) = EPS Operating System
+02 (0x02) = Sub-Directory
+03 (0x03) = EPS Individual Instrument File
+04 (0x04) = EPS Bank of Sounds
+05 (0x05) = EPS Sequence File
+06 (0x06) = EPS Song File
+07 (0x07) = EPS System Exclusive File
+08 (0x08) = Pointer to Parent Directory
+09 (0x09) = EPS Macro File
+
+(VFX-SD/SD-1 types omitted - 0x0A-0x16)
+
+17 (0x17) = EPS-16 Plus Bank File          <-- EPS-16+ specific
+18 (0x18) = EPS-16 Plus Effect File        <-- EPS-16+ specific
+19 (0x19) = EPS-16 Plus Sequence File      <-- EPS-16+ specific
+1A (0x1A) = EPS-16 Plus Song File          <-- EPS-16+ specific
+1B (0x1B) = EPS-16 Plus Operating System   <-- EPS-16+ specific
+
+IMPORTANT: The document does NOT list a separate EPS-16+ Instrument type!
+EPS-16+ instruments appear to still use type 0x03, same as original EPS.
+
+================================================================================
+DISK FORMAT (EPS, EPS-16, VFX-SD, SD-1)
+================================================================================
+
+- Both sides, 80 tracks (0-79) per side
+- 10 sectors per track, 512 bytes per sector
+- Total: 1600 blocks (blocks 0-1599)
+
+Block calculation:
+  Block = ((Track x 2) + Head) x 10) + Sector
+
+EPS/EPS-16 Block Layout:
+  Block 0:     Unused (pattern 6D B6 repeating)
+  Block 1:     Device ID Block
+  Block 2:     Operating System Block
+  Block 3-4:   Main Directory (2 sectors)
+  Block 5-14:  File Allocation Blocks
+  Block 15+:   File data
+
+================================================================================
+DIRECTORY ENTRY FORMAT (26 bytes)
+================================================================================
+
+Byte 01:     Type-dependent info (multi-file index on EPS-16)
+Byte 02:     File Type (see list above)
+Byte 03-14:  File Name (12 bytes for EPS, space-padded)
+Byte 15-16:  File Size in blocks (big-endian)
+Byte 17-18:  Number of Contiguous Blocks
+Byte 19-22:  Pointer to First Block Location (24-bit, big-endian)
+Byte 23:     Multi File Index (EPS-16) / File Number (VFX-SD)
+Byte 24-26:  Reserved on EPS / 24-bit Byte Count on VFX-SD
+
+================================================================================
+GIEBLER EFE FILE FORMAT
+================================================================================
+
+The .efe files created by Giebler's PC tools have:
+- 512-byte header (offsets 0x000-0x1FF)
+- Raw instrument/file data (offset 0x200+)
+
+Header structure:
+  0x00-0x01: CR LF (0x0D 0x0A)
+  0x02-0x11: "Eps File:       " or "Asr File:       "
+  0x12-0x1D: Filename (12 bytes, space-padded)
+  0x1E-0x2D: Type text (e.g., "Instr          ")
+  0x2E-0x30: CR LF EOF (0x0D 0x0A 0x1A)
+  0x32:      File type code (see list above)
+  0x34-0x35: Size in blocks (big-endian)
+  0x36-0x37: Contiguous blocks (big-endian)
+  0x38-0x3A: Start block from original disk (24-bit big-endian)
+  0x3B:      Multi-file index
+  0x3C-0x1FF: Zero padding
+
+================================================================================
+SAMPLE DATA FORMAT
+================================================================================
+
+Based on analysis of factory sounds from Giebler EFE files:
+- Samples stored as 16-bit signed big-endian
+- Full 16-bit range used (-32768 to +32767)
+- Sample rates: 52000, 39000, 31200, 26000, 19500, 15600, 13000, 9750, 7800, 6250 Hz
+
+Note: Original EPS had 13-bit DAC but stored samples as 16-bit.
+EPS-16+ has true 16-bit DAC. Factory sounds appear to use full 16-bit range.
+
+================================================================================
+SOURCE
+================================================================================
+
+Original PDF: https://www.deepsonic.ch/deep/docs_manuals/ensoniq_floppy_diskette_formats.pdf
+Archived to: references/ensoniq_floppy_diskette_formats.pdf
