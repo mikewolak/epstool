@@ -173,16 +173,21 @@ The sample rate is stored at offset 0x374 as an index into this table:
 ### Layer Header Pattern
 
 Each layer header starts with the signature: `0e 00 00 00 06 XX YY 00 ZZ 00`
-- XX = flags (0x40, 0x80, 0xC0 observed)
+- XX = flags (position in layer chain)
 - YY = layer number (1-8)
-- ZZ = wavesample count in this layer
+- ZZ = wavesample count (cumulative)
 - Followed by layer name in UTF-16LE (12 chars)
+
+**Layer Flags:**
+- 0x40 = first layer (has subsequent layer)
+- 0x80 = middle layer (has previous and next)
+- 0xC0 = last layer (has previous only)
 
 Layer header structure (48 bytes):
 | Offset | Size | Description |
 |--------|------|-------------|
 | 0x00 | 5 | Signature `0e 00 00 00 06` |
-| 0x05 | 1 | Flags |
+| 0x05 | 1 | Flags (0x40/0x80/0xC0) |
 | 0x06 | 1 | Layer number |
 | 0x07 | 1 | 0x00 |
 | 0x08 | 1 | Wavesample count |
@@ -190,6 +195,7 @@ Layer header structure (48 bytes):
 | 0x0A | 24 | Layer name (UTF-16LE) |
 | 0x22+ | varies | Additional layer data |
 
+Note: Even single-wavesample instruments have 3 layer headers (velocity layers).
 Instruments can have up to 8 layers and 127 wavesamples total.
 
 ### Multi-Wavesample Instruments
@@ -277,7 +283,7 @@ From the official Ensoniq MIDI SysEx Specification (EPS-MKB2), the wavesample pa
 | 137 | Modulation Type | 0=none, 1=start, 2=loop, 3=both ✓ |
 | 138 | unused | 0 |
 
-### Envelope Structure (22 words each)
+### Envelope Structure (22 words each) ✓
 
 Each of the three envelopes (Pitch, Filter, Amplitude) uses 22 words:
 
@@ -354,19 +360,20 @@ Bytes 6-7: Unknown (16-bit LE word, varies)
 Bytes 8-9: Unknown (16-bit LE word, varies)
 ```
 
-**Byte 3 Flags** (observed bit patterns):
-- 0x00 = no flags
-- 0x10 = bit 4 set
-- 0x20 = bit 5 set
-- 0x30 = bits 4+5 set
-- 0x40 = bit 6 set
-- 0x80 = bit 7 set
-- 0x90 = bits 4+7 set
+**Byte 3 (Sample Size Indicator)**:
+The high nibble encodes sample size in 4KB units (blocks / 8):
+- 0x00 = tiny samples (< 8 blocks, ~4KB)
+- 0x10-0x30 = small samples (8-30 blocks)
+- 0x40-0x50 = medium samples (32-48 blocks)
+- 0x60-0x90 = large samples (> 48 blocks, capped at 0x90)
+
+Formula: `B3 >> 4 ≈ (sample_bytes / 4096)` ✓
 
 Common values observed:
 - Rate index 8 (7800 Hz) most common in factory sounds
 - Rate index 6 (13000 Hz) used for synthesized sounds
 - B5 = 0x80 indicates valid wavesample
+- B6-B9: Hardware-specific, purpose unknown
 
 **Loop Mode Values:**
 - 0 = Forward (no loop)
