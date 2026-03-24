@@ -675,11 +675,11 @@ void eps_print_info(eps_fs_t *fs)
     printf("Disk ID:        %02X %02X %02X %02X\n",
            fs->disk_id[0], fs->disk_id[1], fs->disk_id[2], fs->disk_id[3]);
     printf("Total blocks:   %u (%u KB / %u MB)\n", fs->total_blocks,
-           (fs->total_blocks * EPS_BLOCK_SIZE) / 1024,
-           (fs->total_blocks * EPS_BLOCK_SIZE) / (1024 * 1024));
+           (uint32_t)(((uint64_t)fs->total_blocks * EPS_BLOCK_SIZE) / 1024),
+           (uint32_t)(((uint64_t)fs->total_blocks * EPS_BLOCK_SIZE) / (1024 * 1024)));
     printf("Free blocks:    %u (%u KB / %u MB)\n", fs->free_blocks,
-           (fs->free_blocks * EPS_BLOCK_SIZE) / 1024,
-           (fs->free_blocks * EPS_BLOCK_SIZE) / (1024 * 1024));
+           (uint32_t)(((uint64_t)fs->free_blocks * EPS_BLOCK_SIZE) / 1024),
+           (uint32_t)(((uint64_t)fs->free_blocks * EPS_BLOCK_SIZE) / (1024 * 1024)));
     printf("Type:           %s\n", fs->is_hard_disk ? "Hard Disk" : "Floppy");
     printf("FAT blocks:     %u (starting at block %u)\n", fs->fat_blocks, fs->fat_start);
     printf("Root dir block: %u\n", fs->root_dir_block);
@@ -1187,7 +1187,8 @@ int eps_import_dir(eps_fs_t *fs, uint32_t parent_dir, const char *src_dir,
  */
 int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
 {
-    uint32_t total_blocks = (size_mb * 1024 * 1024) / EPS_BLOCK_SIZE;
+    /* Use 64-bit arithmetic to avoid overflow for disks > 4095 MB */
+    uint32_t total_blocks = (uint32_t)(((uint64_t)size_mb * 1024 * 1024) / EPS_BLOCK_SIZE);
     uint32_t fat_blocks = (total_blocks + EPS_FAT_ENTRIES_PER_BLOCK - 1) / EPS_FAT_ENTRIES_PER_BLOCK;
     uint32_t os_start_block = EPS_BLOCK_FAT_START + fat_blocks;
     uint32_t os_blocks = include_os ? EPS_OS_BLOCKS : 0;
