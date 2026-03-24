@@ -40,14 +40,17 @@ Size can range from 1 to 8192 MB (limited by 24-bit FAT addressing).
 The `mkhfe` command creates HFE floppy images directly from EFE (Ensoniq File Exchange) files. HFE is the format used by the [HxC Floppy Emulator](http://hxc2001.com/), allowing you to load sounds onto hardware EPS/EPS-16+ samplers via SD card or USB floppy emulator.
 
 ```bash
+# Create a blank bootable OS disk (no sounds)
+epstool mkhfe boot.hfe --os
+
 # Create an HFE floppy with one instrument
 epstool mkhfe output.hfe "MY BASS.efe"
 
 # Create an HFE floppy with multiple instruments
 epstool mkhfe sounds.hfe "PIANO.efe" "STRINGS.efe" "DRUMS.efe"
 
-# Include the EPS-16+ OS on the floppy (makes it bootable)
-epstool mkhfe --os bootdisk.hfe "STARTUP.efe"
+# Create a bootable disk with sounds
+epstool mkhfe bootdisk.hfe --os "STARTUP.efe"
 ```
 
 The command:

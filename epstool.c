@@ -38,7 +38,7 @@ static void usage(const char *prog)
     fprintf(stderr, "Image creation:\n");
     fprintf(stderr, "  mkimage <file> <size_mb> [--no-os]  - Create new disk image\n");
 #ifdef HAVE_LIBHXCFE
-    fprintf(stderr, "  mkhfe <output.hfe> [--os] <input.efe> ...  - Create HFE floppy from EFE files\n");
+    fprintf(stderr, "  mkhfe <output.hfe> [--os] [input.efe ...]  - Create HFE floppy from EFE files\n");
     fprintf(stderr, "  extracthfe <input.hfe> <output_dir>        - Extract all files from HFE to EFE\n");
 #endif
     fprintf(stderr, "\nImage operations: %s <image> <command> [args...]\n\n", prog);
@@ -1225,9 +1225,13 @@ int main(int argc, char *argv[])
 #ifdef HAVE_LIBHXCFE
     /* Handle mkhfe - create HFE floppy from EFE files */
     if (strcmp(argv[1], "mkhfe") == 0) {
-        if (argc < 4) {
-            fprintf(stderr, "Usage: %s mkhfe <output.hfe> [--os] <input.efe> ...\n", argv[0]);
-            fprintf(stderr, "  --os: Include EPS operating system on disk\n");
+        if (argc < 3) {
+            fprintf(stderr, "Usage: %s mkhfe <output.hfe> [--os] [input.efe ...]\n", argv[0]);
+            fprintf(stderr, "  --os: Include EPS operating system (creates bootable disk)\n");
+            fprintf(stderr, "\nExamples:\n");
+            fprintf(stderr, "  %s mkhfe boot.hfe --os              # Blank bootable OS disk\n", argv[0]);
+            fprintf(stderr, "  %s mkhfe sounds.hfe file1.efe       # Data disk with sounds\n", argv[0]);
+            fprintf(stderr, "  %s mkhfe boot.hfe --os sounds.efe   # Bootable disk with sounds\n", argv[0]);
             return 1;
         }
 
@@ -1241,12 +1245,11 @@ int main(int argc, char *argv[])
             efe_start = 4;
         }
 
-        if (argc <= efe_start) {
-            fprintf(stderr, "Error: No input EFE files specified\n");
-            return 1;
-        }
+        /* Allow creating blank disk (with or without OS) */
+        int num_efe = (argc > efe_start) ? argc - efe_start : 0;
+        char **efe_files = (num_efe > 0) ? &argv[efe_start] : NULL;
 
-        return cmd_mkhfe(output_hfe, include_os, argc - efe_start, &argv[efe_start]);
+        return cmd_mkhfe(output_hfe, include_os, num_efe, efe_files);
     }
 
     /* Handle extracthfe - extract EFE files from HFE floppy image */
