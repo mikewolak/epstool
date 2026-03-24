@@ -130,19 +130,22 @@ EPS instrument files (`.efe` in Giebler format) contain sample data and paramete
 
 ### Instrument Structure
 
+All offsets are relative to the start of raw instrument data (after 512-byte Giebler header).
+
 | Raw Offset | Size | Description |
 |------------|------|-------------|
 | 0x000-0x07F | 128 | Instrument header |
 | 0x00A | 24 | Instrument name (UTF-16LE, 12 chars) |
 | 0x086-0x0FF | 122 | Wavesample allocation table |
-| 0x280-0x37F | 256 | Layer 1 header |
+| 0x280-0x28F | 16 | Pre-layer data (purpose unknown) |
+| 0x290-0x2BF | 48 | Layer 1 header (see pattern below) |
 | 0x298 | 2 | Wavesample count (uint16 LE) |
 | 0x29A | 24 | Layer name (UTF-16LE "UNNAMEDLAYER") |
-| 0x2C0 | 256 | Key-to-wavesample mapping (2 bytes/key) |
+| 0x2C0-0x3BF | 256 | Key-to-wavesample mapping (2 bytes/key) |
 | 0x370-0x48F | 288 | Wavesample 1 parameter block |
 | 0x374 | 1 | **Sample rate index** (0-9) |
 | 0x37A | 24 | Wavesample name (UTF-16LE "UNNAMED WS") |
-| 0x490+ | varies | Sample data |
+| 0x490+ | varies | Sample data (16-bit big-endian audio) |
 
 ### Sample Rate Index
 
@@ -169,12 +172,209 @@ The sample rate is stored at offset 0x374 as an index into this table:
 
 ### Layer Header Pattern
 
-Each layer header starts with the signature: `0e 00 00 00 06 XX YY 00 YY 00`
-- XX = flags (varies)
+Each layer header starts with the signature: `0e 00 00 00 06 XX YY 00 ZZ 00`
+- XX = flags (0x40, 0x80, 0xC0 observed)
 - YY = layer number (1-8)
-- Followed by layer name in UTF-16LE
+- ZZ = wavesample count in this layer
+- Followed by layer name in UTF-16LE (12 chars)
+
+Layer header structure (48 bytes):
+| Offset | Size | Description |
+|--------|------|-------------|
+| 0x00 | 5 | Signature `0e 00 00 00 06` |
+| 0x05 | 1 | Flags |
+| 0x06 | 1 | Layer number |
+| 0x07 | 1 | 0x00 |
+| 0x08 | 1 | Wavesample count |
+| 0x09 | 1 | 0x00 |
+| 0x0A | 24 | Layer name (UTF-16LE) |
+| 0x22+ | varies | Additional layer data |
 
 Instruments can have up to 8 layers and 127 wavesamples total.
+
+### Multi-Wavesample Instruments
+
+For instruments with multiple wavesamples:
+
+1. **Wavesample Allocation Table** (0x086-0x0FF): Contains up to 30 entries of 4 bytes each:
+   - Bytes 0-1: Start block number (uint16 LE)
+   - Bytes 2-3: Block count (uint16 LE)
+   - Data offset = start_block × 512 (from raw instrument start)
+
+2. **Key-to-Wavesample Mapping** (0x2C0-0x3BF): 128 entries of 2 bytes each, one per MIDI key.
+   The high byte contains the wavesample number (1-based index into allocation table).
+
+3. **Sample Data**: Located at block offsets specified in allocation table. Each wavesample's
+   audio data may be non-contiguous in the file.
+
+Example from ELEC PIANO (2 displayed wavesamples, 4 unique audio regions):
+```
+WS 2: block 140, 7 blocks (3584 bytes) - lower keys
+WS 4: block 41, 6 blocks (3072 bytes)
+WS 7: block 126, 6 blocks (3072 bytes)
+WS 10: block 12, 7 blocks (3584 bytes) - upper keys
+```
+
+## Wavesample Parameter Block (RAM Format)
+
+From the official Ensoniq MIDI SysEx Specification (EPS-MKB2), the wavesample parameter block in RAM consists of 138 words. Each parameter occupies one 16-bit word with the value in the **high byte**.
+
+### Main Parameters (138 words total)
+
+| Word | Description | Range/Notes |
+|------|-------------|-------------|
+| 0-11 | Name | 12 ASCII bytes, one per word |
+| 12 | Wavesample Copy Number | 0 = original |
+| 13 | Wavesample Copy Layer | Layer containing original |
+| 14-35 | Pitch Envelope #1 | 22 words (see envelope structure) |
+| 36-57 | Filter Envelope #2 | 22 words |
+| 58-79 | Amplitude Envelope #3 | 22 words |
+| **80** | **Root Key** | MIDI key 0-127 |
+| 81 | Pitch Envelope Amount | |
+| 82 | LFO Amount | |
+| 83 | Random Modulation Amount | |
+| 84 | Pitch Wheel Bend Range | |
+| 85 | Modulation Source | |
+| 86 | Fine Tune | Signed 7-bit fraction |
+| 87 | Modulation Amount | |
+| 88 | Filter Mode | |
+| 89 | FC#1 Cutoff | |
+| 90 | FC#2 Cutoff | |
+| 91 | FC#1 Keyboard Amount | |
+| 92 | FC#2 Keyboard Amount | |
+| 93 | FC#1 Filter Envelope Amount | |
+| 94 | FC#2 Filter Envelope Amount | |
+| 95 | FC#1 Modulation Source | |
+| 96 | FC#2 Modulation Source | |
+| 97 | FC#1 Modulation Amount | |
+| 98 | FC#2 Modulation Amount | |
+| 99 | Volume | |
+| 100 | Amplitude Modulation Source | |
+| 101 | Amplitude Crossfade Curve A | |
+| 102 | Amplitude Crossfade Curve B | |
+| 103 | Amplitude Crossfade Curve C | |
+| 104 | Amplitude Crossfade Curve D | |
+| 105 | Pan Position | Includes separate out assignment |
+| 106 | Amplitude Modulation Amount | |
+| 107 | LFO Waveform | |
+| 108 | LFO Speed | |
+| 109 | LFO Depth | |
+| 110 | LFO Delay Time | |
+| 111 | LFO Modulation Source | |
+| 112 | LFO Mode | |
+| 113 | Random Modulator Frequency | |
+| **114** | **Loop Mode** | 0-4 (fwd/bwd/loop fwd/loop bidi/loop+rel) |
+| **115-118** | **Sample Start Offset** | 32-bit, high bytes only, shift right 9 |
+| **119-122** | **Sample End Offset** | 32-bit, high bytes only, shift right 9 |
+| **123-126** | **Loop Start Offset** | 32-bit, high bytes only, shift right 9 |
+| **127-130** | **Loop End Offset** | 32-bit, high bytes only, shift right 9 |
+| **131** | **Sample Rate** | Period = rate × 1.6 µs |
+| 132 | Key Range Lo | |
+| 133 | Key Range Hi | |
+| 134 | Start/Loop Modulation Source | |
+| 135 | Start/Loop Modulation Amount | |
+| 136 | Start/Loop Modulation Range | |
+| 137 | Modulation Type | 0=none, 1=start, 2=loop, 3=both |
+| 138 | unused | |
+
+### Envelope Structure (22 words each)
+
+Each of the three envelopes (Pitch, Filter, Amplitude) uses 22 words:
+
+| Offset | Description |
+|--------|-------------|
+| 0 | Envelope Type (preset selection) |
+| 1 | Soft Level 0 (initial level) |
+| 2 | Hard Level 0 (initial level) |
+| 3 | Time 1 (attack time) |
+| 4 | Soft Level 1 (peak level) |
+| 5 | Hard Level 1 (peak level) |
+| 6 | Time 2 (first decay time) |
+| 7 | Soft Level 2 |
+| 8 | Hard Level 2 |
+| 9 | Time 3 (second decay time) |
+| 10 | Soft Level 3 |
+| 11 | Hard Level 3 |
+| 12 | Time 4 (third decay time) |
+| 13 | Soft Level 4 (sustain level) |
+| 14 | Hard Level 4 (sustain level) |
+| 15 | Time 5 (release time) |
+| 16 | Velocity Switch (soft level on/off) |
+| 17 | Level 5 (release breakpoint, relative +/-) |
+| 18 | Time 6 (second release time) |
+| 19 | Time 1 velocity sensitivity |
+| 20 | Keyboard Time Scaling |
+| 21 | Mode (0=normal, 1=cycle, 2=repeat) |
+
+**Note:** This is the RAM format used for MIDI SysEx transfers. The on-disk format differs - see mapping below.
+
+### Disk-to-RAM Mapping (Confirmed)
+
+The disk wavesample parameter block at offset 0x370 (from Giebler header start) contains a 10-byte disk-only header followed by the RAM parameter block. The mapping formula is:
+
+```
+Disk offset = 0x370 + 10 + (RAM_word × 2)
+```
+
+| Disk Offset | Bytes | RAM Word | Description | Verified |
+|-------------|-------|----------|-------------|----------|
+| 0x370+0 | 10 | (header) | Disk-only header | ✓ |
+| 0x370+4 | 1 | (header) | Sample Rate INDEX (0-9) | ✓ |
+| 0x370+10 | 24 | 0-11 | Name (12 chars) | ✓ |
+| 0x370+170 | 2 | 80 | Root Key (MIDI 0-127) | ✓ |
+| 0x370+238 | 2 | 114 | Loop Mode (0-4) | ✓ |
+| 0x370+240 | 8 | 115-118 | Sample Start (4 words) | ✓ |
+| 0x370+248 | 8 | 119-122 | Sample End (4 words) | ✓ |
+| 0x370+256 | 8 | 123-126 | Loop Start (4 words) | ✓ |
+| 0x370+264 | 8 | 127-130 | Loop End (4 words) | ✓ |
+| 0x370+274 | 2 | 132 | Key Range Lo | ✓ |
+| 0x370+276 | 2 | 133 | Key Range Hi | ✓ |
+
+**10-byte Disk Header** (before RAM block):
+```
+Byte 0:   Checksum or ID (varies per instrument)
+Byte 1:   0x00 (constant)
+Byte 2:   0x00 (usually, 0x01 observed in some)
+Byte 3:   Flags (0x00, 0x10, 0x30, 0x40, 0x80, 0x90, etc.)
+Byte 4:   Sample Rate Index (0-9)
+Byte 5:   0x80 (constant flag, marks valid wavesample)
+Bytes 6-7: Loop-related high bytes
+Bytes 8-9: Loop-related low bytes
+```
+
+Common values observed:
+- Rate index 8 (7800 Hz) most common in factory sounds
+- B5 = 0x80 indicates valid wavesample
+- B6-B9 often mirror loop start/end positions
+
+**Loop Mode Values:**
+- 0 = Forward (no loop)
+- 1 = Backward (no loop, play in reverse)
+- 2 = Loop Forward (most common)
+- 3 = Loop Bidirectional (ping-pong)
+- 4 = Loop and Release
+
+### Decoding Sample/Loop Offsets
+
+The 4-word sample and loop offset fields (words 115-130) encode 32-bit sample positions:
+
+1. Each field uses 4 consecutive 16-bit words
+2. Only the **high byte** of each word contains data (per RAM format)
+3. Combine high bytes as big-endian 32-bit value
+4. Shift right by 9 bits to get sample count
+
+```c
+// Example: decoding Sample End (words 119-122 at disk offset 0x370+248)
+uint8_t b0 = data[offset + 0];  // high byte of word 119
+uint8_t b1 = data[offset + 2];  // high byte of word 120
+uint8_t b2 = data[offset + 4];  // high byte of word 121
+uint8_t b3 = data[offset + 6];  // high byte of word 122
+
+uint32_t raw = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+uint32_t sample_count = raw >> 9;
+```
+
+**Note:** Multi-wavesample instruments have different data at these offsets for the non-primary wavesamples.
 
 ## Filesystem Structure
 
