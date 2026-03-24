@@ -24,6 +24,7 @@
 #include <ctype.h>
 #include <libgen.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include "epsfs.h"
 #include "efe_giebler.h"
 #include "efe_raw.h"
@@ -38,6 +39,7 @@ static void usage(const char *prog)
     fprintf(stderr, "  mkimage <file> <size_mb> [--no-os]  - Create new disk image\n");
 #ifdef HAVE_LIBHXCFE
     fprintf(stderr, "  mkhfe <output.hfe> [--os] <input.efe> ...  - Create HFE floppy from EFE files\n");
+    fprintf(stderr, "  extracthfe <input.hfe> <output_dir>        - Extract all files from HFE to EFE\n");
 #endif
     fprintf(stderr, "\nImage operations: %s <image> <command> [args...]\n\n", prog);
     fprintf(stderr, "Commands:\n");
@@ -1009,6 +1011,183 @@ cleanup:
     unlink(tmp_raw);  /* Clean up temp file */
     return result;
 }
+
+/*
+ * Extract all files from an HFE floppy image to EFE files.
+ *
+ * This reads an HFE file, converts it to raw sector data, then extracts
+ * all EPS files to Giebler format EFE files in the specified output directory.
+ */
+static int cmd_extracthfe(const char *input_hfe, const char *output_dir)
+{
+    int result = 1;
+    char tmp_raw[256];
+    HXCFE *hxcfe = NULL;
+    HXCFE_IMGLDR *imgldr = NULL;
+    HXCFE_FLOPPY *floppy = NULL;
+    eps_fs_t *fs = NULL;
+
+    /* Create temporary raw image path */
+    snprintf(tmp_raw, sizeof(tmp_raw), "/tmp/epstool_extracthfe_%d.img", getpid());
+
+    printf("Loading HFE file: %s\n", input_hfe);
+
+    /* Initialize libhxcfe */
+    hxcfe = hxcfe_init();
+    if (!hxcfe) {
+        fprintf(stderr, "Failed to initialize libhxcfe\n");
+        goto cleanup;
+    }
+
+    imgldr = hxcfe_imgInitLoader(hxcfe);
+    if (!imgldr) {
+        fprintf(stderr, "Failed to initialize image loader\n");
+        goto cleanup;
+    }
+
+    /* Load the HFE file */
+    int32_t err_ret;
+    int32_t hfe_loader_id = hxcfe_imgGetLoaderID(imgldr, "HXC_HFE");
+    if (hfe_loader_id < 0) {
+        fprintf(stderr, "HXC_HFE loader not found\n");
+        goto cleanup;
+    }
+
+    floppy = hxcfe_imgLoad(imgldr, (char*)input_hfe, hfe_loader_id, &err_ret);
+    if (!floppy || err_ret != HXCFE_NOERROR) {
+        fprintf(stderr, "Failed to load HFE file: error %d\n", err_ret);
+        goto cleanup;
+    }
+
+    /* Get floppy geometry */
+    int32_t num_tracks = hxcfe_getNumberOfTrack(hxcfe, floppy);
+    int32_t num_sides = hxcfe_getNumberOfSide(hxcfe, floppy);
+    printf("  Tracks: %d, Sides: %d\n", num_tracks, num_sides);
+
+    /* Export to raw sector image using RAW_LOADER */
+    printf("Converting to raw sector image...\n");
+
+    /* Set up the environment for RAW_LOADER export */
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_SECTOR_PER_TRACK", "10");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_NUMBER_OF_TRACK", "80");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_NUMBER_OF_SIDE", "2");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_SECTOR_SIZE", "512");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_FIRSTSECTORID", "0");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_TRACKFORMAT", "ISOFORMAT_DD");
+
+    int32_t raw_loader_id = hxcfe_imgGetLoaderID(imgldr, "RAW_LOADER");
+    if (raw_loader_id < 0) {
+        fprintf(stderr, "RAW_LOADER not found\n");
+        goto cleanup;
+    }
+
+    if (hxcfe_imgExport(imgldr, floppy, tmp_raw, raw_loader_id) != HXCFE_NOERROR) {
+        fprintf(stderr, "Failed to export raw image\n");
+        goto cleanup;
+    }
+
+    /* Clean up libhxcfe resources before opening EPS image */
+    hxcfe_imgUnload(imgldr, floppy);
+    floppy = NULL;
+    hxcfe_imgDeInitLoader(imgldr);
+    imgldr = NULL;
+    hxcfe_deinit(hxcfe);
+    hxcfe = NULL;
+
+    /* Open the raw image as EPS filesystem */
+    fs = eps_open(tmp_raw);
+    if (!fs) {
+        fprintf(stderr, "Failed to open extracted image as EPS filesystem\n");
+        goto cleanup;
+    }
+
+    /* Create output directory if it doesn't exist */
+    struct stat st;
+    if (stat(output_dir, &st) != 0) {
+        if (mkdir(output_dir, 0755) != 0) {
+            fprintf(stderr, "Failed to create output directory: %s\n", output_dir);
+            goto cleanup;
+        }
+    }
+
+    /* Iterate through root directory and extract all files */
+    eps_dir_t *dir = eps_opendir(fs, EPS_BLOCK_ROOT_DIR);
+    if (!dir) {
+        fprintf(stderr, "Failed to open root directory\n");
+        goto cleanup;
+    }
+
+    int files_extracted = 0;
+    eps_dir_entry_t *entry;
+
+    while ((entry = eps_readdir(dir)) != NULL) {
+        /* Skip directories and OS files */
+        if (entry->file_type == EPS_TYPE_SUBDIR || entry->file_type == EPS_TYPE_OS) {
+            continue;
+        }
+
+        /* Format the filename */
+        char name[13];
+        eps_format_filename(entry->filename, name);
+
+        /* Create output path with type prefix like "[01][Instr  ] NAME.efe" */
+        char output_path[512];
+        snprintf(output_path, sizeof(output_path), "%s/[%02d][%-7s] %s.efe",
+                 output_dir, files_extracted + 1,
+                 eps_type_name(entry->file_type), name);
+
+        printf("  Extracting: %s (%s, %u blocks)\n",
+               name, eps_type_name(entry->file_type), entry->size_blocks);
+
+        /* Read file data */
+        eps_file_t *file = eps_fopen(fs, EPS_BLOCK_ROOT_DIR, name);
+        if (!file) {
+            fprintf(stderr, "    Failed to open file\n");
+            continue;
+        }
+
+        size_t data_size = entry->size_blocks * EPS_BLOCK_SIZE;
+        uint8_t *data = malloc(data_size);
+        if (!data) {
+            eps_fclose(file);
+            continue;
+        }
+
+        size_t bytes_read = eps_fread(data, 1, data_size, file);
+        eps_fclose(file);
+
+        if (bytes_read == 0) {
+            fprintf(stderr, "    Failed to read file data\n");
+            free(data);
+            continue;
+        }
+
+        /* Create Giebler EFE file */
+        if (efe_giebler_create(data, bytes_read, output_path, name,
+                               entry->file_type, false) != 0) {
+            fprintf(stderr, "    Failed to create EFE file\n");
+            free(data);
+            continue;
+        }
+
+        free(data);
+        files_extracted++;
+        printf("    -> %s\n", output_path);
+    }
+
+    eps_closedir(dir);
+
+    printf("Extracted %d files to %s\n", files_extracted, output_dir);
+    result = 0;
+
+cleanup:
+    if (floppy && imgldr) hxcfe_imgUnload(imgldr, floppy);
+    if (imgldr) hxcfe_imgDeInitLoader(imgldr);
+    if (hxcfe) hxcfe_deinit(hxcfe);
+    if (fs) eps_close(fs);
+    unlink(tmp_raw);  /* Clean up temp file */
+    return result;
+}
 #endif /* HAVE_LIBHXCFE */
 
 int main(int argc, char *argv[])
@@ -1068,6 +1247,16 @@ int main(int argc, char *argv[])
         }
 
         return cmd_mkhfe(output_hfe, include_os, argc - efe_start, &argv[efe_start]);
+    }
+
+    /* Handle extracthfe - extract EFE files from HFE floppy image */
+    if (strcmp(argv[1], "extracthfe") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s extracthfe <input.hfe> <output_dir>\n", argv[0]);
+            fprintf(stderr, "  Extracts all files from HFE floppy image to EFE format\n");
+            return 1;
+        }
+        return cmd_extracthfe(argv[2], argv[3]);
     }
 #endif
 

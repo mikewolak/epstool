@@ -62,6 +62,25 @@ The command:
 - The HFE output uses double-density MFM encoding matching original EPS floppies
 - Requires libhxcfe (bundled in `libhxcfe/` directory)
 
+### Extracting EFE Files from HFE Images
+
+The `extracthfe` command extracts all files from an HFE floppy image to Giebler format EFE files:
+
+```bash
+# Extract all files from an HFE floppy to a directory
+epstool extracthfe myfloppy.hfe ./extracted/
+
+# This creates EFE files like:
+#   [01][Instrument] JAZZ KIT 496.efe
+#   [02][Instrument] MUTE TRUMPET.efe
+```
+
+The command:
+1. Loads the HFE file using libhxcfe
+2. Converts to raw sector data
+3. Parses the EPS filesystem
+4. Exports each file with a Giebler header containing metadata
+
 ### Viewing Disk Information
 
 ```bash
