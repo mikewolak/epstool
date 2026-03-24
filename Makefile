@@ -2,6 +2,12 @@ CC = gcc
 CFLAGS = -std=c99 -Wall -Wextra -pedantic -O2
 LDFLAGS =
 
+# HFE support via libhxcfe (enabled by default if libhxcfe/ exists)
+ifneq ($(wildcard libhxcfe/libhxcfe.so),)
+CFLAGS += -DHAVE_LIBHXCFE -I./libhxcfe
+LDFLAGS += -L./libhxcfe -lhxcfe -Wl,-rpath,'$$ORIGIN/libhxcfe'
+endif
+
 # Core filesystem
 SRCS = epsfs.c epstool.c
 # EFE format handlers
@@ -22,7 +28,7 @@ HEADERS = epsfs.h efe_raw.h efe_giebler.h
 all: $(TARGET) $(EFEFILE_TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 $(EFEFILE_TARGET): $(EFEFILE_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^

@@ -23,9 +23,11 @@
 #include <string.h>
 #include <ctype.h>
 #include <libgen.h>
+#include <unistd.h>
 #include "epsfs.h"
 #include "efe_giebler.h"
 #include "efe_raw.h"
+/* Note: libhxcfe.h is included via epsfs.h when HAVE_LIBHXCFE is defined */
 
 static void usage(const char *prog)
 {
@@ -34,6 +36,9 @@ static void usage(const char *prog)
     fprintf(stderr, "Usage: %s <command> [args...]\n\n", prog);
     fprintf(stderr, "Image creation:\n");
     fprintf(stderr, "  mkimage <file> <size_mb> [--no-os]  - Create new disk image\n");
+#ifdef HAVE_LIBHXCFE
+    fprintf(stderr, "  mkhfe <output.hfe> [--os] <input.efe> ...  - Create HFE floppy from EFE files\n");
+#endif
     fprintf(stderr, "\nImage operations: %s <image> <command> [args...]\n\n", prog);
     fprintf(stderr, "Commands:\n");
     fprintf(stderr, "  info                       - Show disk information\n");
@@ -885,6 +890,127 @@ static uint32_t navigate_path(eps_fs_t *fs, const char *path)
     return current_dir;
 }
 
+#ifdef HAVE_LIBHXCFE
+/*
+ * Create an HFE floppy image from EFE files.
+ *
+ * This creates a formatted EPS floppy disk image containing the specified
+ * EFE files, then converts it to HFE format for use with floppy emulators.
+ */
+static int cmd_mkhfe(const char *output_hfe, bool include_os, int num_efe, char *efe_files[])
+{
+    int result = 1;
+    char tmp_raw[256];
+    eps_fs_t *fs = NULL;
+    HXCFE *hxcfe = NULL;
+    HXCFE_IMGLDR *imgldr = NULL;
+    HXCFE_FLOPPY *floppy = NULL;
+
+    /* Create temporary raw image path */
+    snprintf(tmp_raw, sizeof(tmp_raw), "/tmp/epstool_mkhfe_%d.img", getpid());
+
+    /* Create a blank 800KB floppy image (uses size_mb=0 which defaults to floppy) */
+    printf("Creating EPS floppy image%s...\n", include_os ? " with OS" : "");
+    if (eps_mkimage(tmp_raw, 0, include_os) != 0) {
+        fprintf(stderr, "Failed to create temporary floppy image\n");
+        goto cleanup;
+    }
+
+    /* Open the image and import EFE files */
+    fs = eps_open(tmp_raw);
+    if (!fs) {
+        fprintf(stderr, "Failed to open temporary image\n");
+        goto cleanup;
+    }
+
+    /* Import each EFE file */
+    for (int i = 0; i < num_efe; i++) {
+        char name_out[13];
+        eps_file_type_t type_out;
+
+        printf("Importing %s...\n", efe_files[i]);
+        if (eps_import_efe(fs, EPS_BLOCK_ROOT_DIR, efe_files[i], name_out, &type_out) != 0) {
+            fprintf(stderr, "Failed to import %s\n", efe_files[i]);
+            goto cleanup;
+        }
+        printf("  -> %s (%s)\n", name_out, eps_type_name(type_out));
+    }
+
+    /* Close the EPS image to flush writes */
+    eps_close(fs);
+    fs = NULL;
+
+    /* Now convert to HFE using libhxcfe */
+    printf("Converting to HFE format...\n");
+
+    hxcfe = hxcfe_init();
+    if (!hxcfe) {
+        fprintf(stderr, "Failed to initialize libhxcfe\n");
+        goto cleanup;
+    }
+
+    /* Use XML layout API for proper Ensoniq disk geometry */
+    HXCFE_XMLLDR *xmlldr = hxcfe_initXmlFloppy(hxcfe);
+    if (!xmlldr) {
+        fprintf(stderr, "Failed to initialize XML floppy loader\n");
+        goto cleanup;
+    }
+
+    /* Get the predefined ENSONIQ_DD_800KB layout ID */
+    int32_t layout_id = hxcfe_getXmlLayoutID(xmlldr, "ENSONIQ_DD_800KB");
+    if (layout_id < 0) {
+        fprintf(stderr, "ENSONIQ_DD_800KB layout not found\n");
+        hxcfe_deinitXmlFloppy(xmlldr);
+        goto cleanup;
+    }
+
+    /* Select the Ensoniq layout */
+    if (hxcfe_selectXmlFloppyLayout(xmlldr, layout_id) != HXCFE_NOERROR) {
+        fprintf(stderr, "Failed to select ENSONIQ_DD_800KB layout\n");
+        hxcfe_deinitXmlFloppy(xmlldr);
+        goto cleanup;
+    }
+
+    /* Load the raw image using the selected layout */
+    floppy = hxcfe_generateXmlFileFloppy(xmlldr, tmp_raw);
+    hxcfe_deinitXmlFloppy(xmlldr);
+
+    if (!floppy) {
+        fprintf(stderr, "Failed to load raw image with Ensoniq layout\n");
+        goto cleanup;
+    }
+
+    imgldr = hxcfe_imgInitLoader(hxcfe);
+    if (!imgldr) {
+        fprintf(stderr, "Failed to initialize image loader\n");
+        goto cleanup;
+    }
+
+    /* Export as HFE */
+    int32_t hfe_loader_id = hxcfe_imgGetLoaderID(imgldr, "HXC_HFE");
+    if (hfe_loader_id < 0) {
+        fprintf(stderr, "HXC_HFE exporter not found\n");
+        goto cleanup;
+    }
+
+    if (hxcfe_imgExport(imgldr, floppy, (char*)output_hfe, hfe_loader_id) != HXCFE_NOERROR) {
+        fprintf(stderr, "Failed to export HFE file\n");
+        goto cleanup;
+    }
+
+    printf("Created %s\n", output_hfe);
+    result = 0;
+
+cleanup:
+    if (floppy && imgldr) hxcfe_imgUnload(imgldr, floppy);
+    if (imgldr) hxcfe_imgDeInitLoader(imgldr);
+    if (hxcfe) hxcfe_deinit(hxcfe);
+    if (fs) eps_close(fs);
+    unlink(tmp_raw);  /* Clean up temp file */
+    return result;
+}
+#endif /* HAVE_LIBHXCFE */
+
 int main(int argc, char *argv[])
 {
     if (argc < 2) {
@@ -916,6 +1042,34 @@ int main(int argc, char *argv[])
 
         return eps_mkimage(filename, size_mb, include_os);
     }
+
+#ifdef HAVE_LIBHXCFE
+    /* Handle mkhfe - create HFE floppy from EFE files */
+    if (strcmp(argv[1], "mkhfe") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s mkhfe <output.hfe> [--os] <input.efe> ...\n", argv[0]);
+            fprintf(stderr, "  --os: Include EPS operating system on disk\n");
+            return 1;
+        }
+
+        const char *output_hfe = argv[2];
+        bool include_os = false;
+        int efe_start = 3;
+
+        /* Check for --os option */
+        if (argc > 3 && strcmp(argv[3], "--os") == 0) {
+            include_os = true;
+            efe_start = 4;
+        }
+
+        if (argc <= efe_start) {
+            fprintf(stderr, "Error: No input EFE files specified\n");
+            return 1;
+        }
+
+        return cmd_mkhfe(output_hfe, include_os, argc - efe_start, &argv[efe_start]);
+    }
+#endif
 
     /* Handle standalone EFE file commands - don't need disk image */
     if (strcmp(argv[1], "inst-info") == 0) {

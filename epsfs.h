@@ -3,6 +3,7 @@
  *
  * Based on the Ensoniq EPS/EPS-16+/ASR hard disk format specification.
  * Supports both floppy (1600 blocks) and hard disk images.
+ * Supports HFE floppy disk images via libhxcfe.
  */
 
 #ifndef EPSFS_H
@@ -11,6 +12,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+
+/* HFE support via libhxcfe */
+#ifdef HAVE_LIBHXCFE
+#include "libhxcfe.h"
+#endif
 
 /* Block and sector constants */
 #define EPS_BLOCK_SIZE          512
@@ -105,7 +111,7 @@ typedef struct __attribute__((packed)) {
 
 /* Filesystem handle */
 typedef struct {
-    FILE    *fp;                /* File pointer to disk image */
+    FILE    *fp;                /* File pointer to disk image (NULL for HFE) */
     char    *filename;          /* Path to disk image */
     uint32_t total_blocks;      /* Total blocks in image */
     uint32_t free_blocks;       /* Free blocks */
@@ -121,6 +127,14 @@ typedef struct {
     uint32_t next_free_hint;    /* Hint for next free block search */
     /* Disk ID for bank file patching */
     uint8_t  disk_id[4];        /* 4-byte disk identifier */
+    /* HFE support */
+#ifdef HAVE_LIBHXCFE
+    bool     is_hfe;            /* true if opened as HFE file */
+    HXCFE           *hxcfe;     /* libhxcfe context */
+    HXCFE_IMGLDR    *imgldr;    /* Image loader context */
+    HXCFE_FLOPPY    *floppy;    /* Floppy disk handle */
+    HXCFE_SECTORACCESS *ss;     /* Sector access context */
+#endif
 } eps_fs_t;
 
 /* Directory handle for iteration */

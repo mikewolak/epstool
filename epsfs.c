@@ -14,6 +14,12 @@
 #include "epsfs.h"
 #include "efe_giebler.h"
 
+/* EPS floppy disk geometry */
+#define EPS_HFE_TRACKS      80
+#define EPS_HFE_SIDES       2
+#define EPS_HFE_SECTORS     10
+#define EPS_HFE_SECTOR_SIZE 512
+
 /* Directory constants - a directory is always a 2-block pair (1024 bytes) */
 #define EPS_DIR_BLOCKS          2
 #define EPS_DIR_PAIR_SIZE       (EPS_DIR_BLOCKS * EPS_BLOCK_SIZE)  /* 1024 bytes */
@@ -63,7 +69,16 @@ const char *eps_type_name(eps_file_type_t type)
 void eps_format_filename(const char *raw, char *formatted)
 {
     int i;
-    memcpy(formatted, raw, 12);
+
+    /* Copy all 12 bytes, converting nulls and non-printable chars to spaces */
+    for (i = 0; i < 12; i++) {
+        unsigned char c = (unsigned char)raw[i];
+        if (c == 0 || c < 32 || c >= 127) {
+            formatted[i] = ' ';
+        } else {
+            formatted[i] = (char)c;
+        }
+    }
     formatted[12] = '\0';
 
     /* Trim trailing spaces */
@@ -87,11 +102,140 @@ void eps_unformat_filename(const char *name, char *raw12)
     }
 }
 
-/* Open a disk image */
-eps_fs_t *eps_open(const char *filename)
+/* Check if filename has .hfe extension */
+static bool is_hfe_file(const char *filename)
+{
+    if (!filename) return false;
+    size_t len = strlen(filename);
+    if (len < 4) return false;
+    const char *ext = filename + len - 4;
+    return (strcasecmp(ext, ".hfe") == 0);
+}
+
+#ifdef HAVE_LIBHXCFE
+/* Open an HFE floppy disk image using libhxcfe */
+static eps_fs_t *eps_open_hfe(const char *filename)
 {
     eps_fs_t *fs = calloc(1, sizeof(eps_fs_t));
     if (!fs) return NULL;
+
+    fs->is_hfe = true;
+    fs->filename = strdup(filename);
+    fs->fp = NULL;  /* Not using FILE* for HFE */
+
+    /* Initialize libhxcfe */
+    fs->hxcfe = hxcfe_init();
+    if (!fs->hxcfe) {
+        fprintf(stderr, "Failed to initialize libhxcfe\n");
+        free(fs->filename);
+        free(fs);
+        return NULL;
+    }
+
+    /* Initialize image loader */
+    fs->imgldr = hxcfe_imgInitLoader(fs->hxcfe);
+    if (!fs->imgldr) {
+        fprintf(stderr, "Failed to initialize image loader\n");
+        hxcfe_deinit(fs->hxcfe);
+        free(fs->filename);
+        free(fs);
+        return NULL;
+    }
+
+    /* Auto-detect the image format */
+    int32_t moduleID = hxcfe_imgAutoSetectLoader(fs->imgldr, (char*)filename, 0);
+    if (moduleID < 0) {
+        fprintf(stderr, "Failed to detect HFE format\n");
+        hxcfe_imgDeInitLoader(fs->imgldr);
+        hxcfe_deinit(fs->hxcfe);
+        free(fs->filename);
+        free(fs);
+        return NULL;
+    }
+
+    /* Load the HFE file */
+    int32_t err_ret;
+    fs->floppy = hxcfe_imgLoad(fs->imgldr, (char*)filename, moduleID, &err_ret);
+    if (!fs->floppy || err_ret != HXCFE_NOERROR) {
+        fprintf(stderr, "Failed to load HFE file: error %d\n", err_ret);
+        hxcfe_imgDeInitLoader(fs->imgldr);
+        hxcfe_deinit(fs->hxcfe);
+        free(fs->filename);
+        free(fs);
+        return NULL;
+    }
+
+    /* Get disk geometry */
+    int32_t nr_tracks = hxcfe_getNumberOfTrack(fs->hxcfe, fs->floppy);
+    int32_t nr_sides = hxcfe_getNumberOfSide(fs->hxcfe, fs->floppy);
+
+    /* EPS floppy: 80 tracks, 2 sides, 10 sectors/track = 1600 blocks */
+    fs->total_blocks = nr_tracks * nr_sides * EPS_HFE_SECTORS;
+    fs->is_hard_disk = false;  /* HFE is always floppy */
+    fs->root_dir_block = EPS_BLOCK_ROOT_DIR;
+    fs->fat_start = EPS_BLOCK_FAT_START;
+
+    /* Calculate FAT blocks needed */
+    fs->fat_blocks = (fs->total_blocks + EPS_FAT_ENTRIES_PER_BLOCK - 1) / EPS_FAT_ENTRIES_PER_BLOCK;
+
+    /* Initialize sector access */
+    fs->ss = hxcfe_initSectorAccess(fs->hxcfe, fs->floppy);
+    if (!fs->ss) {
+        fprintf(stderr, "Failed to initialize sector access\n");
+        hxcfe_imgUnload(fs->imgldr, fs->floppy);
+        hxcfe_imgDeInitLoader(fs->imgldr);
+        hxcfe_deinit(fs->hxcfe);
+        free(fs->filename);
+        free(fs);
+        return NULL;
+    }
+
+    /* Read device ID and OS block to get metadata */
+    uint8_t block[EPS_BLOCK_SIZE];
+    if (eps_read_block(fs, EPS_BLOCK_OS, block) == 0) {
+        fs->free_blocks = eps_read_be24(&block[0x01]);
+        memcpy(fs->disk_id, &block[0x04], 4);
+    }
+
+    /* Load FAT cache */
+    size_t fat_size = fs->total_blocks * 3;
+    fs->fat_cache = malloc(fat_size);
+    if (fs->fat_cache) {
+        uint8_t fat_block[EPS_BLOCK_SIZE];
+        for (uint32_t fb = 0; fb < fs->fat_blocks; fb++) {
+            if (eps_read_block(fs, fs->fat_start + fb, fat_block) == 0) {
+                for (int i = 0; i < EPS_FAT_ENTRIES_PER_BLOCK; i++) {
+                    uint32_t entry_idx = fb * EPS_FAT_ENTRIES_PER_BLOCK + i;
+                    if (entry_idx < fs->total_blocks) {
+                        memcpy(&fs->fat_cache[entry_idx * 3], &fat_block[i * 3], 3);
+                    }
+                }
+            }
+        }
+        fs->fat_dirty = false;
+        fs->next_free_hint = fs->fat_start + fs->fat_blocks;
+    }
+
+    return fs;
+}
+#endif
+
+/* Open a disk image */
+eps_fs_t *eps_open(const char *filename)
+{
+#ifdef HAVE_LIBHXCFE
+    /* Check if it's an HFE file */
+    if (is_hfe_file(filename)) {
+        return eps_open_hfe(filename);
+    }
+#endif
+
+    eps_fs_t *fs = calloc(1, sizeof(eps_fs_t));
+    if (!fs) return NULL;
+
+#ifdef HAVE_LIBHXCFE
+    fs->is_hfe = false;
+#endif
 
     fs->fp = fopen(filename, "r+b");
     if (!fs->fp) {
@@ -219,13 +363,33 @@ void eps_close(eps_fs_t *fs)
 {
     if (!fs) return;
 
-    /* Flush FAT cache if dirty */
-    eps_fat_flush(fs);
+#ifdef HAVE_LIBHXCFE
+    if (fs->is_hfe) {
+        /* Clean up libhxcfe resources */
+        if (fs->ss) {
+            hxcfe_deinitSectorAccess(fs->ss);
+        }
+        if (fs->floppy && fs->imgldr) {
+            hxcfe_imgUnload(fs->imgldr, fs->floppy);
+        }
+        if (fs->imgldr) {
+            hxcfe_imgDeInitLoader(fs->imgldr);
+        }
+        if (fs->hxcfe) {
+            hxcfe_deinit(fs->hxcfe);
+        }
+    } else
+#endif
+    {
+        /* Flush FAT cache if dirty */
+        eps_fat_flush(fs);
 
-    /* Sync free block count before closing */
-    eps_sync_free_blocks(fs);
+        /* Sync free block count before closing */
+        eps_sync_free_blocks(fs);
 
-    if (fs->fp) fclose(fs->fp);
+        if (fs->fp) fclose(fs->fp);
+    }
+
     free(fs->filename);
     free(fs->fat_cache);
     free(fs);
@@ -234,7 +398,70 @@ void eps_close(eps_fs_t *fs)
 /* Read a block from the disk image */
 int eps_read_block(eps_fs_t *fs, uint32_t block_num, void *buffer)
 {
-    if (!fs || !fs->fp || block_num >= fs->total_blocks) {
+    if (!fs || block_num >= fs->total_blocks) {
+        return -1;
+    }
+
+#ifdef HAVE_LIBHXCFE
+    if (fs->is_hfe) {
+        /* Convert block number to track/side/sector for HFE access */
+        /* EPS floppy: 80 tracks, 2 sides, 10 sectors/track = 1600 blocks */
+        /* Block layout: track 0 side 0, track 0 side 1, track 1 side 0, ... */
+        uint32_t blocks_per_cylinder = EPS_HFE_SIDES * EPS_HFE_SECTORS;
+        uint32_t track = block_num / blocks_per_cylinder;
+        uint32_t remainder = block_num % blocks_per_cylinder;
+        uint32_t side = remainder / EPS_HFE_SECTORS;
+        uint32_t sector = remainder % EPS_HFE_SECTORS;  /* EPS sectors are 0-based */
+
+        /* Reset search position and get all sectors on this track */
+        hxcfe_resetSearchTrackPosition(fs->ss);
+        hxcfe_clearTrackCache(fs->ss);
+
+        int32_t nb_sectors = 0;
+        HXCFE_SECTCFG **sectors = hxcfe_getAllTrackSectors(fs->ss, track, side,
+                                                           ISOIBM_MFM_ENCODING, &nb_sectors);
+        if (!sectors || nb_sectors == 0) {
+            fprintf(stderr, "No sectors found on track %u side %u\n", track, side);
+            return -1;
+        }
+
+        /* Find the sector with matching ID */
+        HXCFE_SECTCFG *found = NULL;
+        for (int i = 0; i < nb_sectors; i++) {
+            int32_t secid = hxcfe_getSectorConfigSectorID(fs->hxcfe, sectors[i]);
+            if ((uint32_t)secid == sector) {
+                found = sectors[i];
+                break;
+            }
+        }
+
+        if (!found) {
+            /* Free all sector configs */
+            for (int i = 0; i < nb_sectors; i++) {
+                hxcfe_freeSectorConfig(fs->ss, sectors[i]);
+            }
+            free(sectors);
+            fprintf(stderr, "Sector ID %u not found on track %u side %u\n", sector, track, side);
+            return -1;
+        }
+
+        uint8_t *data = hxcfe_getSectorData(fs->ss, found);
+        if (data) {
+            memcpy(buffer, data, EPS_HFE_SECTOR_SIZE);
+        }
+
+        /* Free all sector configs */
+        for (int i = 0; i < nb_sectors; i++) {
+            hxcfe_freeSectorConfigData(fs->ss, sectors[i]);
+            hxcfe_freeSectorConfig(fs->ss, sectors[i]);
+        }
+        free(sectors);
+
+        return data ? 0 : -1;
+    }
+#endif
+
+    if (!fs->fp) {
         return -1;
     }
 
@@ -252,7 +479,19 @@ int eps_read_block(eps_fs_t *fs, uint32_t block_num, void *buffer)
 /* Write a block to the disk image */
 int eps_write_block(eps_fs_t *fs, uint32_t block_num, const void *buffer)
 {
-    if (!fs || !fs->fp || block_num >= fs->total_blocks) {
+    if (!fs || block_num >= fs->total_blocks) {
+        return -1;
+    }
+
+#ifdef HAVE_LIBHXCFE
+    if (fs->is_hfe) {
+        /* HFE write support not implemented - would need to re-encode MFM */
+        fprintf(stderr, "Warning: HFE write not supported (read-only)\n");
+        return -1;
+    }
+#endif
+
+    if (!fs->fp) {
         return -1;
     }
 
@@ -498,7 +737,9 @@ eps_dir_entry_t *eps_readdir(eps_dir_t *dir)
 {
     static eps_dir_entry_t entry;
 
-    if (!dir || !dir->fs || !dir->loaded) return NULL;
+    if (!dir || !dir->fs || !dir->loaded) {
+        return NULL;
+    }
 
     /* Iterate through all 39 possible entries in the directory pair */
     while (dir->entry_index < EPS_MAX_DIR_ENTRIES) {
@@ -1188,7 +1429,13 @@ int eps_import_dir(eps_fs_t *fs, uint32_t parent_dir, const char *src_dir,
 int eps_mkimage(const char *filename, uint32_t size_mb, bool include_os)
 {
     /* Use 64-bit arithmetic to avoid overflow for disks > 4095 MB */
-    uint32_t total_blocks = (uint32_t)(((uint64_t)size_mb * 1024 * 1024) / EPS_BLOCK_SIZE);
+    /* Special case: size_mb=0 means create a standard 800KB floppy (1600 blocks) */
+    uint32_t total_blocks;
+    if (size_mb == 0) {
+        total_blocks = EPS_FLOPPY_BLOCKS;  /* 1600 blocks = 800KB */
+    } else {
+        total_blocks = (uint32_t)(((uint64_t)size_mb * 1024 * 1024) / EPS_BLOCK_SIZE);
+    }
     uint32_t fat_blocks = (total_blocks + EPS_FAT_ENTRIES_PER_BLOCK - 1) / EPS_FAT_ENTRIES_PER_BLOCK;
     uint32_t os_start_block = EPS_BLOCK_FAT_START + fat_blocks;
     uint32_t os_blocks = include_os ? EPS_OS_BLOCKS : 0;
