@@ -816,6 +816,24 @@ eps_file_t *eps_fopen(eps_fs_t *fs, uint32_t dir_block, const char *name)
     return file;
 }
 
+/* Open a file directly from a directory entry (no name lookup) */
+eps_file_t *eps_fopen_entry(eps_fs_t *fs, eps_dir_entry_t *entry)
+{
+    if (!fs || !entry) return NULL;
+
+    eps_file_t *file = calloc(1, sizeof(eps_file_t));
+    if (!file) return NULL;
+
+    file->fs = fs;
+    memcpy(&file->entry, entry, sizeof(eps_dir_entry_t));
+    file->current_block = entry->first_block;
+    file->block_offset = 0;
+    file->position = 0;
+    file->size_bytes = entry->size_blocks * EPS_BLOCK_SIZE;
+
+    return file;
+}
+
 /* Read from a file */
 size_t eps_fread(void *buffer, size_t size, size_t count, eps_file_t *file)
 {

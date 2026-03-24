@@ -1136,11 +1136,11 @@ static int cmd_extracthfe(const char *input_hfe, const char *output_dir)
                  output_dir, files_extracted + 1,
                  eps_type_name(entry->file_type), name);
 
-        printf("  Extracting: %s (%s, %u blocks)\n",
+        printf("  Extracting: '%s' (%s, %u blocks)\n",
                name, eps_type_name(entry->file_type), entry->size_blocks);
 
-        /* Read file data */
-        eps_file_t *file = eps_fopen(fs, EPS_BLOCK_ROOT_DIR, name);
+        /* Read file data directly from entry (handles NULL bytes in filename) */
+        eps_file_t *file = eps_fopen_entry(fs, entry);
         if (!file) {
             fprintf(stderr, "    Failed to open file\n");
             continue;

@@ -183,6 +183,7 @@ eps_dir_entry_t *eps_find_entry(eps_fs_t *fs, uint32_t dir_block, const char *na
 
 /* File operations */
 eps_file_t *eps_fopen(eps_fs_t *fs, uint32_t dir_block, const char *name);
+eps_file_t *eps_fopen_entry(eps_fs_t *fs, eps_dir_entry_t *entry);
 size_t eps_fread(void *buffer, size_t size, size_t count, eps_file_t *file);
 void eps_fclose(eps_file_t *file);
 int eps_extract(eps_fs_t *fs, uint32_t dir_block, const char *name, const char *dest_path);
