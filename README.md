@@ -90,6 +90,15 @@ epstool mydisk.hda mkdir "NEW FOLDER"
 epstool mydisk.hda rm "OLD FILE"
 ```
 
+### Exporting Wavesamples to WAV
+
+```bash
+# Export all wavesamples from an instrument to WAV files
+epstool export-wav instrument.efe ./output_dir/
+```
+
+This extracts the audio data from EPS instrument files (`.efe`) to standard 16-bit PCM WAV files. Multi-wavesample instruments will produce multiple WAV files.
+
 ### Low-Level Inspection
 
 ```bash
@@ -114,6 +123,58 @@ epstool mydisk.hda fat 0 50
 | Macro | 0x09 | Macro File |
 | EPS-16+ Instrument | 0x19 | EPS-16+ Instrument |
 | Effect | 0x1A | EPS-16+ Effect |
+
+## EPS Instrument File Format
+
+EPS instrument files (`.efe` in Giebler format) contain sample data and parameters. The internal structure (after the 512-byte Giebler header) is:
+
+### Instrument Structure
+
+| Raw Offset | Size | Description |
+|------------|------|-------------|
+| 0x000-0x07F | 128 | Instrument header |
+| 0x00A | 24 | Instrument name (UTF-16LE, 12 chars) |
+| 0x086-0x0FF | 122 | Wavesample allocation table |
+| 0x280-0x37F | 256 | Layer 1 header |
+| 0x298 | 2 | Wavesample count (uint16 LE) |
+| 0x29A | 24 | Layer name (UTF-16LE "UNNAMEDLAYER") |
+| 0x2C0 | 256 | Key-to-wavesample mapping (2 bytes/key) |
+| 0x370-0x48F | 288 | Wavesample 1 parameter block |
+| 0x374 | 1 | **Sample rate index** (0-9) |
+| 0x37A | 24 | Wavesample name (UTF-16LE "UNNAMED WS") |
+| 0x490+ | varies | Sample data |
+
+### Sample Rate Index
+
+The sample rate is stored at offset 0x374 as an index into this table:
+
+| Index | Rate (Hz) | Notes |
+|-------|-----------|-------|
+| 0 | 52000 | Highest quality |
+| 1 | 39000 | |
+| 2 | 31200 | |
+| 3 | 26000 | Default |
+| 4 | 19500 | |
+| 5 | 15600 | |
+| 6 | 13000 | |
+| 7 | 9750 | |
+| 8 | 7800 | Most common in factory sounds |
+| 9 | 6250 | Lowest quality, longest sample time |
+
+### Sample Data Format
+
+- **Encoding**: 16-bit signed, big-endian
+- **Channels**: Mono (EPS), Stereo possible on EPS-16+/ASR
+- **Bit depth**: 13-bit effective on original EPS, 16-bit on EPS-16+/ASR
+
+### Layer Header Pattern
+
+Each layer header starts with the signature: `0e 00 00 00 06 XX YY 00 YY 00`
+- XX = flags (varies)
+- YY = layer number (1-8)
+- Followed by layer name in UTF-16LE
+
+Instruments can have up to 8 layers and 127 wavesamples total.
 
 ## Filesystem Structure
 
