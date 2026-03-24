@@ -229,48 +229,48 @@ From the official Ensoniq MIDI SysEx Specification (EPS-MKB2), the wavesample pa
 | 14-35 | Pitch Envelope #1 | 22 words (see envelope structure) |
 | 36-57 | Filter Envelope #2 | 22 words |
 | 58-79 | Amplitude Envelope #3 | 22 words |
-| **80** | **Root Key** | MIDI key 0-127 |
-| 81 | Pitch Envelope Amount | |
-| 82 | LFO Amount | |
-| 83 | Random Modulation Amount | |
-| 84 | Pitch Wheel Bend Range | |
-| 85 | Modulation Source | |
-| 86 | Fine Tune | Signed 7-bit fraction |
-| 87 | Modulation Amount | |
-| 88 | Filter Mode | |
-| 89 | FC#1 Cutoff | |
-| 90 | FC#2 Cutoff | |
-| 91 | FC#1 Keyboard Amount | |
-| 92 | FC#2 Keyboard Amount | |
-| 93 | FC#1 Filter Envelope Amount | |
-| 94 | FC#2 Filter Envelope Amount | |
+| **80** | **Root Key** | MIDI key 0-127 ✓ |
+| 81 | Pitch Envelope Amount | 0-127 ✓ |
+| 82 | LFO to Pitch Amount | 0-127 ✓ |
+| 83 | Random Modulation Amount | 0-127 ✓ |
+| 84 | Pitch Wheel Bend Range | Typically 13 (±13 semitones) ✓ |
+| 85 | Modulation Source | 3=MW, 10=Aftertouch ✓ |
+| 86 | Fine Tune | Signed (-128 to +127 cents) ✓ |
+| 87 | Modulation Amount | 0-255 ✓ |
+| 88 | Filter Mode | 0=off, 1-3=filter types ✓ |
+| 89 | FC#1 Cutoff | 0-127 ✓ |
+| 90 | FC#2 Cutoff | 0-127 ✓ |
+| 91 | FC#1 Keyboard Amount | 0-127 ✓ |
+| 92 | FC#2 Keyboard Amount | 0-127 ✓ |
+| 93 | FC#1 Filter Envelope Amount | 0-127 ✓ |
+| 94 | FC#2 Filter Envelope Amount | 0-127 ✓ |
 | 95 | FC#1 Modulation Source | |
 | 96 | FC#2 Modulation Source | |
 | 97 | FC#1 Modulation Amount | |
 | 98 | FC#2 Modulation Amount | |
-| 99 | Volume | |
-| 100 | Amplitude Modulation Source | |
-| 101 | Amplitude Crossfade Curve A | |
-| 102 | Amplitude Crossfade Curve B | |
-| 103 | Amplitude Crossfade Curve C | |
-| 104 | Amplitude Crossfade Curve D | |
-| 105 | Pan Position | Includes separate out assignment |
-| 106 | Amplitude Modulation Amount | |
-| 107 | LFO Waveform | |
-| 108 | LFO Speed | |
-| 109 | LFO Depth | |
-| 110 | LFO Delay Time | |
-| 111 | LFO Modulation Source | |
-| 112 | LFO Mode | |
-| 113 | Random Modulator Frequency | |
-| **114** | **Loop Mode** | 0-4 (fwd/bwd/loop fwd/loop bidi/loop+rel) |
-| **115-118** | **Sample Start Offset** | 32-bit, high bytes only, shift right 9 |
-| **119-122** | **Sample End Offset** | 32-bit, high bytes only, shift right 9 |
-| **123-126** | **Loop Start Offset** | 32-bit, high bytes only, shift right 9 |
-| **127-130** | **Loop End Offset** | 32-bit, high bytes only, shift right 9 |
+| 99 | Volume | 0-127 ✓ |
+| 100 | Amplitude Modulation Source | 13=common ✓ |
+| 101 | Amplitude Crossfade Curve A | 0-127 ✓ |
+| 102 | Amplitude Crossfade Curve B | 0-127 ✓ |
+| 103 | Amplitude Crossfade Curve C | 0-127 ✓ |
+| 104 | Amplitude Crossfade Curve D | 0-127 ✓ |
+| 105 | Pan Position | 0-7 (0=L, 7=R, center=3-4) ✓ |
+| 106 | Amplitude Modulation Amount | 0-127 ✓ |
+| 107 | LFO Waveform | 0=tri, 2=square ✓ |
+| 108 | LFO Speed | 0-127 ✓ |
+| 109 | LFO Depth | 0-127 ✓ |
+| 110 | LFO Delay Time | 0-127 ✓ |
+| 111 | LFO Modulation Source | 10=Aftertouch, 14-15=common ✓ |
+| 112 | LFO Mode | 0=normal, 1=sync, 2=key sync ✓ |
+| 113 | Random Modulator Frequency | 0-127 ✓ |
+| **114** | **Loop Mode** | 0-4 (fwd/bwd/loop fwd/loop bidi/loop+rel) ✓ |
+| **115-118** | **Sample Start Offset** | 32-bit, high bytes only, shift right 9 ✓ |
+| **119-122** | **Sample End Offset** | 32-bit, high bytes only, shift right 9 ✓ |
+| **123-126** | **Loop Start Offset** | 32-bit, high bytes only, shift right 9 ✓ |
+| **127-130** | **Loop End Offset** | 32-bit, high bytes only, shift right 9 ✓ |
 | **131** | **Sample Rate** | Period = rate × 1.6 µs |
-| 132 | Key Range Lo | |
-| 133 | Key Range Hi | |
+| 132 | Key Range Lo | MIDI note 0-127 ✓ |
+| 133 | Key Range Hi | MIDI note 0-127 ✓ |
 | 134 | Start/Loop Modulation Source | |
 | 135 | Start/Loop Modulation Amount | |
 | 136 | Start/Loop Modulation Range | |
@@ -321,7 +321,19 @@ Disk offset = 0x370 + 10 + (RAM_word × 2)
 | 0x370+0 | 10 | (header) | Disk-only header | ✓ |
 | 0x370+4 | 1 | (header) | Sample Rate INDEX (0-9) | ✓ |
 | 0x370+10 | 24 | 0-11 | Name (12 chars) | ✓ |
+| 0x370+38 | 44 | 14-35 | Pitch Envelope (22 words) | ✓ |
+| 0x370+82 | 44 | 36-57 | Filter Envelope (22 words) | ✓ |
+| 0x370+126 | 44 | 58-79 | Amplitude Envelope (22 words) | ✓ |
 | 0x370+170 | 2 | 80 | Root Key (MIDI 0-127) | ✓ |
+| 0x370+182 | 2 | 86 | Fine Tune (signed) | ✓ |
+| 0x370+186 | 2 | 88 | Filter Mode | ✓ |
+| 0x370+188 | 2 | 89 | FC#1 Cutoff | ✓ |
+| 0x370+190 | 2 | 90 | FC#2 Cutoff | ✓ |
+| 0x370+208 | 2 | 99 | Volume | ✓ |
+| 0x370+220 | 2 | 105 | Pan Position | ✓ |
+| 0x370+224 | 2 | 107 | LFO Waveform | ✓ |
+| 0x370+226 | 2 | 108 | LFO Speed | ✓ |
+| 0x370+228 | 2 | 109 | LFO Depth | ✓ |
 | 0x370+238 | 2 | 114 | Loop Mode (0-4) | ✓ |
 | 0x370+240 | 8 | 115-118 | Sample Start (4 words) | ✓ |
 | 0x370+248 | 8 | 119-122 | Sample End (4 words) | ✓ |
