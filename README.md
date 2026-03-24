@@ -141,7 +141,7 @@ All offsets are relative to the start of raw instrument data (after 512-byte Gie
 | 0x290-0x2BF | 48 | Layer 1 header (see pattern below) |
 | 0x298 | 2 | Wavesample count (uint16 LE) |
 | 0x29A | 24 | Layer name (UTF-16LE "UNNAMEDLAYER") |
-| 0x2C0-0x3BF | 256 | Key-to-wavesample mapping (2 bytes/key) |
+| 0x2C0-0x36F | 176 | Key-to-wavesample mapping (88 keys × 2 bytes) |
 | 0x370-0x48F | 288 | Wavesample 1 parameter block |
 | 0x374 | 1 | **Sample rate index** (0-9) |
 | 0x37A | 24 | Wavesample name (UTF-16LE "UNNAMED WS") |
@@ -201,7 +201,7 @@ For instruments with multiple wavesamples:
    - Bytes 2-3: Block count (uint16 LE)
    - Data offset = start_block × 512 (from raw instrument start)
 
-2. **Key-to-Wavesample Mapping** (0x2C0-0x3BF): 128 entries of 2 bytes each, one per MIDI key.
+2. **Key-to-Wavesample Mapping** (0x2C0-0x36F): 88 entries of 2 bytes each (piano range, keys 0-87).
    The high byte contains the wavesample number (1-based index into allocation table).
 
 3. **Sample Data**: Located at block offsets specified in allocation table. Each wavesample's
@@ -224,8 +224,8 @@ From the official Ensoniq MIDI SysEx Specification (EPS-MKB2), the wavesample pa
 | Word | Description | Range/Notes |
 |------|-------------|-------------|
 | 0-11 | Name | 12 ASCII bytes, one per word |
-| 12 | Wavesample Copy Number | 0 = original |
-| 13 | Wavesample Copy Layer | Layer containing original |
+| 12 | Wavesample Copy Number | 0 = original ✓ |
+| 13 | Wavesample Copy Layer | 0 = original (layer# if copy) ✓ |
 | 14-35 | Pitch Envelope #1 | 22 words (see envelope structure) |
 | 36-57 | Filter Envelope #2 | 22 words |
 | 58-79 | Amplitude Envelope #3 | 22 words |
@@ -244,10 +244,10 @@ From the official Ensoniq MIDI SysEx Specification (EPS-MKB2), the wavesample pa
 | 92 | FC#2 Keyboard Amount | 0-127 ✓ |
 | 93 | FC#1 Filter Envelope Amount | 0-127 ✓ |
 | 94 | FC#2 Filter Envelope Amount | 0-127 ✓ |
-| 95 | FC#1 Modulation Source | |
-| 96 | FC#2 Modulation Source | |
-| 97 | FC#1 Modulation Amount | |
-| 98 | FC#2 Modulation Amount | |
+| 95 | FC#1 Modulation Source | 0-15 (standard mod sources) ✓ |
+| 96 | FC#2 Modulation Source | 0-15 (standard mod sources) ✓ |
+| 97 | FC#1 Modulation Amount | 0-255 ✓ |
+| 98 | FC#2 Modulation Amount | 0-255 ✓ |
 | 99 | Volume | 0-127 ✓ |
 | 100 | Amplitude Modulation Source | 13=common ✓ |
 | 101 | Amplitude Crossfade Curve A | 0-127 ✓ |
@@ -271,11 +271,11 @@ From the official Ensoniq MIDI SysEx Specification (EPS-MKB2), the wavesample pa
 | **131** | **Sample Rate** | Period = rate × 1.6 µs |
 | 132 | Key Range Lo | MIDI note 0-127 ✓ |
 | 133 | Key Range Hi | MIDI note 0-127 ✓ |
-| 134 | Start/Loop Modulation Source | |
-| 135 | Start/Loop Modulation Amount | |
-| 136 | Start/Loop Modulation Range | |
-| 137 | Modulation Type | 0=none, 1=start, 2=loop, 3=both |
-| 138 | unused | |
+| 134 | Start/Loop Modulation Source | 0-15 (default 13=On) ✓ |
+| 135 | Start/Loop Modulation Amount | 0-255 (default 0) ✓ |
+| 136 | Start/Loop Modulation Range | 0-255 (default 6) ✓ |
+| 137 | Modulation Type | 0=none, 1=start, 2=loop, 3=both ✓ |
+| 138 | unused | 0 |
 
 ### Envelope Structure (22 words each)
 
@@ -344,20 +344,29 @@ Disk offset = 0x370 + 10 + (RAM_word × 2)
 
 **10-byte Disk Header** (before RAM block):
 ```
-Byte 0:   Checksum or ID (varies per instrument)
+Byte 0:   Checksum or ID (varies per instrument, e.g., 0x2A, 0xB3, 0x55)
 Byte 1:   0x00 (constant)
-Byte 2:   0x00 (usually, 0x01 observed in some)
-Byte 3:   Flags (0x00, 0x10, 0x30, 0x40, 0x80, 0x90, etc.)
-Byte 4:   Sample Rate Index (0-9)
-Byte 5:   0x80 (constant flag, marks valid wavesample)
-Bytes 6-7: Loop-related high bytes
-Bytes 8-9: Loop-related low bytes
+Byte 2:   0x00 (usually, 0x01 observed in PAN FLOOT)
+Byte 3:   Flags byte (bit field, see below)
+Byte 4:   Sample Rate Index (0-9) ✓
+Byte 5:   0x80 (constant flag, marks valid wavesample) ✓
+Bytes 6-7: Unknown (16-bit LE word, varies)
+Bytes 8-9: Unknown (16-bit LE word, varies)
 ```
+
+**Byte 3 Flags** (observed bit patterns):
+- 0x00 = no flags
+- 0x10 = bit 4 set
+- 0x20 = bit 5 set
+- 0x30 = bits 4+5 set
+- 0x40 = bit 6 set
+- 0x80 = bit 7 set
+- 0x90 = bits 4+7 set
 
 Common values observed:
 - Rate index 8 (7800 Hz) most common in factory sounds
+- Rate index 6 (13000 Hz) used for synthesized sounds
 - B5 = 0x80 indicates valid wavesample
-- B6-B9 often mirror loop start/end positions
 
 **Loop Mode Values:**
 - 0 = Forward (no loop)
@@ -365,6 +374,17 @@ Common values observed:
 - 2 = Loop Forward (most common)
 - 3 = Loop Bidirectional (ping-pong)
 - 4 = Loop and Release
+
+**Modulation Source Values:**
+| Value | Source |
+|-------|--------|
+| 0 | Off |
+| 3 | Mod Wheel |
+| 6 | Velocity |
+| 9 | Keyboard |
+| 10 | Aftertouch |
+| 13 | On (constant) |
+| 14-15 | Off/On variants |
 
 ### Decoding Sample/Loop Offsets
 
