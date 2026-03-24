@@ -41,6 +41,10 @@ if [[ ! -f "$ROM_SRC_HI" || ! -f "$ROM_SRC_LO" ]]; then
 fi
 
 mkdir -p "$ROM_DST_DIR"
+# MAME’s eps driver expects names eps-h.bin / eps-l.bin.
+cp "$ROM_SRC_HI" "$ROM_DST_DIR/eps-h.bin"
+cp "$ROM_SRC_LO" "$ROM_DST_DIR/eps-l.bin"
+# Keep the descriptive copies too (harmless, can help other tools).
 cp "$ROM_SRC_HI" "$ROM_DST_DIR/eps_os_24_hi.bin"
 cp "$ROM_SRC_LO" "$ROM_DST_DIR/eps_os_24_lo.bin"
 
