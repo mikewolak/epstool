@@ -404,8 +404,17 @@ int efe_raw_parse(efe_raw_t *efe) {
             ws->sample_start = 0;
             ws->sample_end = ws->num_samples;
             ws->root_note = 60;
-            ws->sample_rate_code = 3;
-            ws->sample_rate = 26000;
+
+            /* Sample rate is stored at raw offset 0x374 as an index (0-9) */
+            uint8_t rate_index = 3; /* Default to 26kHz */
+            if (efe->data_size > 0x375) {
+                rate_index = efe->data[0x374];
+                if (rate_index >= EPS_NUM_SAMPLE_RATES) {
+                    rate_index = 3; /* Fall back to 26kHz */
+                }
+            }
+            ws->sample_rate_code = rate_index;
+            ws->sample_rate = EPS_SAMPLE_RATES[rate_index];
             ws->loop_start = 0;
             ws->loop_end = ws->num_samples;
             ws->loop_mode = 0;
