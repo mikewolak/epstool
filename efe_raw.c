@@ -372,7 +372,34 @@ int efe_raw_parse(efe_raw_t *efe) {
             }
 
             ws->data_offset = sample_data_start;
-            ws->data_size = efe->data_size - sample_data_start;
+
+            /*
+             * Find sample data end by scanning for next layer/wavesample header.
+             * Layer headers start with pattern: 0e 00 00 00 06 XX YY 00 YY 00
+             * where YY is the layer number and XX varies.
+             *
+             * If no header found, sample data extends to end of file.
+             */
+            size_t sample_data_end = efe->data_size;
+            for (size_t offset = sample_data_start; offset + 10 < efe->data_size; offset++) {
+                /* Look for layer header signature: 0e 00 00 00 06 */
+                if (efe->data[offset] == 0x0e &&
+                    efe->data[offset + 1] == 0x00 &&
+                    efe->data[offset + 2] == 0x00 &&
+                    efe->data[offset + 3] == 0x00 &&
+                    efe->data[offset + 4] == 0x06) {
+                    /* Verify it looks like a layer header by checking for
+                     * matching layer numbers at offsets +6 and +8 */
+                    uint8_t layer_num1 = efe->data[offset + 6];
+                    uint8_t layer_num2 = efe->data[offset + 8];
+                    if (layer_num1 == layer_num2 && layer_num1 > 0 && layer_num1 <= 8) {
+                        sample_data_end = offset;
+                        break;
+                    }
+                }
+            }
+
+            ws->data_size = sample_data_end - sample_data_start;
             ws->num_samples = ws->data_size / 2;
             ws->sample_start = 0;
             ws->sample_end = ws->num_samples;
