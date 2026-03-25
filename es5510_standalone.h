@@ -33,12 +33,12 @@ typedef enum {
     SRC_DST_BOTH  = (1 << 0) | (1 << 1)
 } op_src_dst_t;
 
-/* Operand select structure - order matches MAME initializers */
+/* Operand select structure - MUST match MAME's struct order: alu_src, alu_dst, mac_src, mac_dst */
 typedef struct {
-    op_src_dst_t mac_src;
-    op_src_dst_t mac_dst;
     op_src_dst_t alu_src;
     op_src_dst_t alu_dst;
+    op_src_dst_t mac_src;
+    op_src_dst_t mac_dst;
 } op_select_t;
 
 /* RAM access types */
