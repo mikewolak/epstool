@@ -33,12 +33,12 @@ typedef enum {
     SRC_DST_BOTH  = (1 << 0) | (1 << 1)
 } op_src_dst_t;
 
-/* Operand select structure */
+/* Operand select structure - order matches MAME initializers */
 typedef struct {
-    op_src_dst_t alu_src;
-    op_src_dst_t alu_dst;
     op_src_dst_t mac_src;
     op_src_dst_t mac_dst;
+    op_src_dst_t alu_src;
+    op_src_dst_t alu_dst;
 } op_select_t;
 
 /* RAM access types */
@@ -156,6 +156,10 @@ typedef struct {
 
 /* Debug flag for R144 tracing */
 extern int debug_r144;
+extern int debug_skip;
+extern int debug_alu;
+extern int debug_ram;
+extern int debug_ccr;
 
 /* Function prototypes */
 void es5510_init(es5510_t *dsp);

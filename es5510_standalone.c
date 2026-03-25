@@ -201,6 +201,10 @@ static int32_t read_reg(es5510_t *dsp, uint8_t reg) {
 
 /* Debug flag for R144 tracing */
 int debug_r144 = 0;
+int debug_skip = 0;  /* Trace conditional skip decisions */
+int debug_alu = 0;   /* Trace ALU writes to DOL */
+int debug_ram = 0;   /* Trace RAM write operations */
+int debug_ccr = 0;   /* Trace CCR changes */
 
 /* Write register - from MAME */
 static void write_reg(es5510_t *dsp, uint8_t reg, int32_t value) {
@@ -463,6 +467,10 @@ void es5510_run_sample(es5510_t *dsp) {
                 skipConditionSatisfied = !skipConditionSatisfied;
             }
             skip = skipConditionSatisfied;
+            if (debug_skip && (dsp->pc == 83 || dsp->pc == 87)) {
+                printf("  [PC=%d] skippable=1 ccr=%02x cmr=%02x (ccr&cmr&0x1f)=%02x skip=%d\n",
+                       dsp->pc, dsp->ccr, dsp->cmr, dsp->ccr & dsp->cmr & 0x1f, skip);
+            }
         }
 
         /* Write Multiplier result N-1 */
@@ -514,6 +522,10 @@ void es5510_run_sample(es5510_t *dsp) {
         dsp->mulacc.dValue = read_reg(dsp, dsp->mulacc.dReg);
 
         /* T2, clock high: Write ALU Result N-1 */
+        if (debug_alu && dsp->pc < 5) {
+            printf("    PC=%d: alu.write_result=%d alu.dst=%d alu.aValue=%d alu.bValue=%d\n",
+                   dsp->pc, dsp->alu.write_result, dsp->alu.dst, dsp->alu.aValue, dsp->alu.bValue);
+        }
         if (dsp->alu.write_result) {
             uint8_t flags = dsp->ccr;
             dsp->alu.result = alu_operation(dsp, dsp->alu.op,
@@ -523,9 +535,13 @@ void es5510_run_sample(es5510_t *dsp) {
                 write_reg(dsp, dsp->alu.aReg, dsp->alu.result);
             }
             if (dsp->alu.dst & SRC_DST_DELAY) {
+                if (debug_alu) printf("    -> write_to_dol(%d)\n", dsp->alu.result);
                 write_to_dol(dsp, dsp->alu.result);
             }
             if (dsp->alu.update_ccr) {
+                if (debug_ccr && flags != dsp->ccr) {
+                    printf("    [PC=%d] CCR: %02x -> %02x\n", dsp->pc, dsp->ccr, flags);
+                }
                 dsp->ccr = flags;
             }
         }
@@ -566,16 +582,23 @@ void es5510_run_sample(es5510_t *dsp) {
         }
 
         /* RAM cycle N-1: write to DRAM or eject DOL */
+        if (debug_ram && dsp->pc < 10 && dsp->ram_p.cycle != RAM_CYCLE_READ) {
+            printf("    PC=%d: ram_p.cycle=%d ram_p.io=%d dol_count=%d dol[0]=%d\n",
+                   dsp->pc, dsp->ram_p.cycle, dsp->ram_p.io, dsp->dol_count, dsp->dol[0]);
+        }
         if (dsp->ram_p.cycle != RAM_CYCLE_READ) {
             if (dsp->ram_p.cycle == RAM_CYCLE_WRITE) {
                 if (!dsp->ram_p.io) {
+                    if (debug_ram) printf("    -> DRAM[%d] = %d\n", dsp->ram_p.address & ES5510_DRAM_MASK, dsp->dol[0] >> 8);
                     dsp->dram[dsp->ram_p.address & ES5510_DRAM_MASK] = dsp->dol[0] >> 8;
                 }
             }
-            /* Eject from DOL FIFO */
-            dsp->dol[0] = dsp->dol[1];
-            if (dsp->dol_count > 0) {
-                --dsp->dol_count;
+            /* Eject from DOL FIFO - only for non-I/O operations */
+            if (!dsp->ram_p.io) {
+                dsp->dol[0] = dsp->dol[1];
+                if (dsp->dol_count > 0) {
+                    --dsp->dol_count;
+                }
             }
         }
 
