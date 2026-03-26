@@ -418,6 +418,14 @@ void es5510_run_sample(es5510_t *dsp) {
     dsp->pc = 0;
     dsp->running = true;
 
+    /*
+     * Synchronize table bases with delay line base at start of sample.
+     * This allows RTA/RTB to read from the same circular buffer as RDL/WDL.
+     * The delay tap GPRs contain offsets in samples * memincrement.
+     */
+    dsp->abase = dsp->dbase;
+    dsp->bbase = dsp->dbase;
+
     while (dsp->running && dsp->pc < 160) {
         /* Pipeline state */
         dsp->ram_pp = dsp->ram_p;

@@ -1,11 +1,11 @@
 /*
  * 4 REVERBS Effect - Input Variable Table
- * 
+ *
  * This defines the GPR registers that need external initialization
- * based on reverse engineering of the Waveboy 4 REVERBS effect.
- * 
+ * based on the Waveboy 4 REVERBS effect file (Mode A).
+ *
  * File: factory_sounds/WAVEBOY_EFE/4 REVERBS.efe
- * Microcode offset: 5698 (0x1642), 960 bytes
+ * Delay tap table extracted from offset 0x270
  */
 
 #ifndef REVERBS_INPUT_TABLE_H
@@ -14,56 +14,52 @@
 #include <stdint.h>
 
 /*
- * DELAY TAP ADDRESSES
- * From file offset 0x276, indices 2-8 only (0-1 are data registers)
- * Values are 16-bit sample counts, multiply by memincrement (0x100) for GPR value
+ * DELAY TAP ADDRESSES (from effect file offset 0x270)
+ *
+ * GPR[PC] provides the delay offset for RAM operations at that PC.
+ * Values are sample counts - multiply by memincrement (0x100) for GPR value.
+ *
+ * The disassembly shows:
+ *   PC 2-5: WDL (Write Delay Line) - writes input to delay buffer
+ *   PC 6-27: RTA/RTB (Read Table A/B) - reads delayed samples
+ *   PC 55+: RDL (Read Delay Line) - reads from circular buffer
  */
-typedef struct {
-    uint16_t samples;    // Delay in samples
-    uint8_t  gpr_index;  // Which GPR this goes to
-    const char* purpose; // Description
-} delay_tap_t;
-
-static const delay_tap_t DELAY_WRITE_TAPS[] = {
-    { 230, 2, "Delay write tap 1" },
-    { 250, 3, "Delay write tap 2" },
-    { 334, 4, "Delay write tap 3" },
-    { 348, 5, "Delay write tap 4" },
+static const uint16_t DELAY_TAPS_MODE_A[] = {
+    /* GPR 0-31: Delay tap values from effect file */
+       0,     /* GPR 0: unused */
+       0,     /* GPR 1: unused */
+    3728,     /* GPR 2: WDL - main delay write (95ms) */
+     192,     /* GPR 3: WDL - early reflection write 1 (5ms) */
+     212,     /* GPR 4: WDL - early reflection write 2 (5.4ms) */
+     230,     /* GPR 5: WDL - early reflection write 3 (5.9ms) */
+     250,     /* GPR 6: RTA - read tap 1 (6.4ms) */
+     334,     /* GPR 7: RTA - read tap 2 (8.5ms) */
+     348,     /* GPR 8: RTA - read tap 3 (8.9ms) */
+     268,     /* GPR 9: RTA - read tap 4 (6.8ms) */
+     300,     /* GPR 10: RTA - read tap 5 (7.7ms) */
+     288,     /* GPR 11: RTA - read tap 6 (7.4ms) */
+    1076,     /* GPR 12: RTA - medium delay 1 (27.5ms) */
+    1096,     /* GPR 13: RTA - medium delay 2 (28ms) */
+    1114,     /* GPR 14: RTA - medium delay 3 (28.4ms) */
+    1134,     /* GPR 15: RTA - medium delay 4 (29ms) */
+    1218,     /* GPR 16: RTA - medium delay 5 (31.1ms) */
+    1232,     /* GPR 17: RTA - medium delay 6 (31.5ms) */
+    1152,     /* GPR 18: RTA - medium delay 7 (29.4ms) */
+    1184,     /* GPR 19: RTA - medium delay 8 (30.2ms) */
+    1172,     /* GPR 20: RTA - medium delay 9 (29.9ms) */
+    1960,     /* GPR 21: RTA - late reflection 1 (50.1ms) */
+    1980,     /* GPR 22: RTA - late reflection 2 (50.6ms) */
+    1998,     /* GPR 23: RTA - late reflection 3 (51ms) */
+    2018,     /* GPR 24: RTA - late reflection 4 (51.5ms) */
+    2102,     /* GPR 25: RTA - late reflection 5 (53.7ms) */
+    2116,     /* GPR 26: RTA - late reflection 6 (54ms) */
+    2036,     /* GPR 27: RTA - late reflection 7 (52ms) */
+    2068,     /* GPR 28: RTB - late reflection 8 (52.8ms) */
+    2056,     /* GPR 29: RTB - late reflection 9 (52.5ms) */
+    2844,     /* GPR 30: RTB - long delay 1 (72.6ms) */
+    2864,     /* GPR 31: RTB - long delay 2 (73.1ms) */
 };
-#define NUM_DELAY_WRITE_TAPS 4
-
-static const delay_tap_t DELAY_READ_TAPS[] = {
-    /* Delay read GPRs - at PC=N, GPR[N] provides the delay RAM offset */
-    /* IMPORTANT: GPRs that are "computed" by MAC still need INITIAL values */
-    /* because the MAC uses the current GPR value as input (R = R * coef) */
-
-    /* Short reflections - these GPRs are multiplied by mode coefficients */
-    { 268,  90, "Early reflection 1" },  /* MAC at PC 4: R90 = R90 * R86 */
-    { 300,  92, "Early reflection 2" },  /* MAC at PC 30: R92 = ... */
-    { 288,  93, "Early reflection 3" },  /* MAC at PC 25: R93 = ... */
-    { 192, 102, "Late reflection 1" },   /* Not computed, preset only */
-
-    /* Feedback taps - computed at earlier PCs but need initial values */
-    { 212, 131, "Late reflection 2" },   /* MAC at PC 22 */
-    { 230, 132, "Feedback tap 1" },      /* MAC at PC 20 */
-    { 250, 133, "Feedback tap 2" },      /* MAC at PC 42 */
-    { 334, 134, "Feedback tap 3" },      /* MAC at PC 40 */
-    { 348, 135, "Diffusion tap 1" },     /* MAC at PC 62 */
-    { 268, 136, "Diffusion tap 2" },     /* MAC at PC 60 */
-    { 300, 137, "Feedback loop 1" },     /* MAC at PC 82 */
-    { 288, 138, "Feedback loop 2" },     /* MAC at PC 80 */
-
-    /* Long delays - not computed, need preset (from TABLE_A) */
-    { 1076, 139, "Long delay 1" },
-    { 1096, 140, "Long delay 2" },
-    { 1114, 141, "Long delay 3" },
-    { 1134, 142, "Long delay 4" },
-    { 1218, 143, "Long delay 5" },
-    { 1232, 144, "Long delay 6" },
-    { 1152, 145, "Long delay 7" },
-    { 192, 146, "Final reflection" },
-};
-#define NUM_DELAY_READ_TAPS 20
+#define NUM_DELAY_TAPS 32
 
 /*
  * COEFFICIENT REGISTERS
@@ -72,73 +68,108 @@ static const delay_tap_t DELAY_READ_TAPS[] = {
  */
 typedef struct {
     uint8_t  gpr_index;
-    int32_t  default_value;  // Q23 format
-    float    default_float;  // Same as float for reference
+    int32_t  default_value;  /* Q23 format */
     const char* name;
-    const char* parameter;   // User-editable parameter that affects this
 } coefficient_t;
 
 static const coefficient_t COEFFICIENTS[] = {
-    /* Primary coefficients (from microcode analysis) */
-    /* NOTE: GPR indices must NOT conflict with delay read PCs! */
-    /* PC 90, 92, 93, 102, 131-146 are delay reads and use GPR[PC] as offset */
+    /* Input/output gain */
+    { 69,  0x200000, "input_gain" },       /* 0.25 */
 
-    { 69,  0x200000,  0.25f,  "input_gain",    "REV VOL" },
-    { 117, 0x600000,  0.75f,  "decay",         "REV DECAY TIME" },
-    { 121, 0x600000,  0.75f,  "decay_r",       "REV DECAY TIME" },  /* Right channel decay */
-    { 95,  0x400000,  0.50f,  "allpass_1",     "REV DIFFUSION" },
-    { 103, 0x300000,  0.375f, "diffusion_1",   "REV DIFFUSION" },
-    { 109, 0x400000,  0.50f,  "allpass_3",     "REV DIFFUSION" },
-    { 110, 0x300000,  0.375f, "diffusion_2",   "REV DIFFUSION" },
+    /* Decay coefficients - R117 is main decay, used heavily */
+    { 117, 0x600000, "decay_main" },       /* 0.75 */
+    { 121, 0x600000, "decay_secondary" },  /* 0.75 */
 
-    /* MAC operand coefficients (from microcode: R113, R181, R182 are used as multipliers) */
-    { 113, 0x400000,  0.50f,  "reflection_coef_1", "REV DIFFUSION" },  /* Used at PC 90 */
-    { 181, 0x400000,  0.50f,  "reflection_coef_2", "REV DIFFUSION" },  /* Used at PC 102 */
-    { 182, 0x400000,  0.50f,  "reflection_coef_3", "REV DIFFUSION" },  /* Used at PC 92 */
+    /* Feedback/damping */
+    { 113, 0x400000, "damping_1" },        /* 0.5 */
+    { 114, 0x400000, "damping_2" },        /* 0.5 */
+    { 115, 0x200000, "hf_damp" },          /* 0.25 */
+    { 116, 0x200000, "hf_damp_coef" },     /* 0.25 */
 
-    /* Feedback coefficients - at non-conflicting GPRs */
-    { 83, (int16_t)0x93ff << 8, -0.8438f, "feedback_1", "REV DECAY TIME" },
+    /* Wet/dry mix - CRITICAL for output! */
+    { 123, 0x600000, "wet_mix_l" },        /* 0.75 wet mix left */
+    { 187, 0x600000, "wet_mix_r" },        /* 0.75 wet mix right */
 
-    /* HF damping (one-pole lowpass) */
-    { 116, 0x200000,  0.25f,  "hf_damp_coef",  "REV HF DAMPING" },
+    /* Mode control coefficients (used in CMP operations) */
+    { 81,  0x200000, "mode_coef_1" },
+    { 82,  0x200000, "mode_coef_2" },
+    { 83,  0x200000, "mode_coef_3" },
+    { 84,  0x200000, "mode_coef_4" },
 
-    /* Output mix - CRITICAL: these are never written by microcode! */
-    /* They must be set externally to get any output */
-    { 123, 0x740000,  0.906f, "wet_mix_left",  "REV VOL" },
-    { 187, 0x740000,  0.906f, "wet_mix_right", "REV VOL" },
+    /* Allpass/diffusion */
+    { 85,  0x400000, "allpass_1" },
+    { 86,  0x400000, "allpass_2" },
+    { 87,  0x400000, "allpass_3" },
+    { 88,  0x400000, "allpass_4" },
+    { 89,  0x400000, "allpass_5" },
+
+    /* Internal mixing coefficients */
+    { 90,  0x300000, "mix_1" },
+    { 91,  0x300000, "mix_2" },
+    { 92,  0x300000, "mix_3" },
+    { 93,  0x300000, "mix_4" },
+    { 94,  0x300000, "mix_5" },
+
+    /* Feedback network */
+    { 95,  0x400000, "feedback_1" },
+    { 96,  0x400000, "feedback_2" },
+    { 97,  0x400000, "feedback_3" },
+    { 98,  0x400000, "feedback_4" },
+    { 99,  0x400000, "feedback_5" },
+    { 100, 0x400000, "feedback_6" },
+    { 101, 0x400000, "feedback_7" },
+    { 102, 0x400000, "feedback_8" },
+    { 103, 0x400000, "feedback_9" },
+    { 104, 0x400000, "feedback_10" },
+    { 105, 0x400000, "feedback_11" },
+    { 106, 0x400000, "feedback_12" },
+    { 107, 0x400000, "feedback_13" },
+    { 108, 0x400000, "feedback_14" },
+    { 109, 0x400000, "late_mix_1" },
+    { 110, 0x400000, "late_mix_2" },
+    { 111, 0x400000, "late_mix_3" },
+    { 112, 0x400000, "late_mix_4" },
+
+    /* Additional mixing for feedback loops */
+    { 131, 0x300000, "loop_mix_1" },
+    { 132, 0x300000, "loop_mix_2" },
+    { 133, 0x300000, "loop_mix_3" },
+    { 134, 0x300000, "loop_mix_4" },
+    { 135, 0x300000, "loop_mix_5" },
+    { 136, 0x300000, "loop_mix_6" },
+    { 137, 0x300000, "loop_mix_7" },
+    { 138, 0x300000, "loop_mix_8" },
+
+    /* Long delay mixing */
+    { 139, 0x200000, "long_mix_1" },
+    { 140, 0x200000, "long_mix_2" },
+    { 141, 0x200000, "long_mix_3" },
+    { 142, 0x200000, "long_mix_4" },
+
+    /* Control/mode registers */
+    { 144, 0x000000, "mode_select" },
+    { 145, 0x000000, "mode_accumulator" },
+    { 146, 0x000000, "mode_temp_1" },
+    { 147, 0x000000, "mode_temp_2" },
+    { 148, 0x000000, "mode_temp_3" },
+    { 149, 0x000000, "accumulator" },
+    { 152, 0x000000, "input_accumulator" },
 };
-#define NUM_COEFFICIENTS 14
-
-/*
- * MODE CONTROL REGISTERS
- */
-typedef struct {
-    uint8_t  gpr_index;
-    int32_t  value;
-    const char* name;
-} mode_reg_t;
-
-static const mode_reg_t MODE_REGISTERS[] = {
-    { 144, 0x000000, "mode_select" },   // Compared against R85,R86,R87 for mode A/B/C/D
-    { 145, 0x000000, "mode_increment" },
-    { 146, 0x000000, "mode_control" },
-    { 152, 0x000000, "accumulator_init" },
-};
-#define NUM_MODE_REGISTERS 4
+#define NUM_COEFFICIENTS (sizeof(COEFFICIENTS) / sizeof(COEFFICIENTS[0]))
 
 /*
  * SPECIAL REGISTERS (read-only or ES5510 controlled)
  */
-#define GPR_SER0L  235  // ADC input left
-#define GPR_SER0R  236  // ADC input right  
-#define GPR_SER3R  240  // DAC output right
-#define GPR_SER3L  241  // DAC output left
-#define GPR_MACL   242  // MAC accumulator low
-#define GPR_MACH   243  // MAC accumulator high
-#define GPR_CCR    250  // Condition code register
-#define GPR_CMR    251  // Condition mask register
-#define GPR_MAX    254  // Constant +1.0 (0x7FFFFF)
-#define GPR_ZERO   255  // Constant 0
+#define GPR_SER0L  235  /* ADC input left */
+#define GPR_SER0R  236  /* ADC input right */
+#define GPR_SER3R  240  /* DAC output right */
+#define GPR_SER3L  241  /* DAC output left */
+#define GPR_MACL   242  /* MAC accumulator low */
+#define GPR_MACH   243  /* MAC accumulator high */
+#define GPR_CCR    250  /* Condition code register */
+#define GPR_CMR    251  /* Condition mask register */
+#define GPR_MAX    254  /* Constant +1.0 (0x7FFFFF) */
+#define GPR_ZERO   255  /* Constant 0 */
 
 /*
  * Initialize effect GPRs with default values
@@ -147,32 +178,16 @@ static inline void reverbs_init_gprs(int32_t* gpr, uint32_t memincrement) {
     /* Clear all user GPRs (0-191) */
     for (int i = 0; i < 192; i++) gpr[i] = 0;
 
-    /* Load delay write taps - these are WRITE addresses */
-    for (int i = 0; i < NUM_DELAY_WRITE_TAPS; i++) {
-        gpr[DELAY_WRITE_TAPS[i].gpr_index] =
-            DELAY_WRITE_TAPS[i].samples * memincrement;
-    }
-
-    /* Load delay read taps - these are READ addresses */
-    for (int i = 0; i < NUM_DELAY_READ_TAPS; i++) {
-        gpr[DELAY_READ_TAPS[i].gpr_index] =
-            DELAY_READ_TAPS[i].samples * memincrement;
+    /* Load delay taps from effect file (GPRs 0-31) */
+    /* These are used by RTA/RDL/WDL operations: address = base + GPR[PC] */
+    for (int i = 0; i < NUM_DELAY_TAPS; i++) {
+        gpr[i] = DELAY_TAPS_MODE_A[i] * memincrement;
     }
 
     /* Load coefficients */
-    for (int i = 0; i < NUM_COEFFICIENTS; i++) {
+    for (size_t i = 0; i < NUM_COEFFICIENTS; i++) {
         gpr[COEFFICIENTS[i].gpr_index] = COEFFICIENTS[i].default_value;
     }
-
-    /* Load mode registers */
-    for (int i = 0; i < NUM_MODE_REGISTERS; i++) {
-        gpr[MODE_REGISTERS[i].gpr_index] = MODE_REGISTERS[i].value;
-    }
-
-    /* Special constants (R252-255) are handled internally by read_reg():
-     * R252 = -1, R253 = MIN, R254 = MAX (+1.0), R255 = ZERO
-     * Do NOT write to gpr[192+] - that overflows the 192-element array!
-     */
 }
 
 #endif /* REVERBS_INPUT_TABLE_H */

@@ -222,18 +222,8 @@ static void init_reson_filter(es5510_t *dsp, float cutoff_hz, float resonance) {
 /*
  * Delay tap offsets from 4 REVERBS.efe at offset 0x276
  * These are 16-bit sample offsets for the reverb delay lines
- * 37 values ranging from 192 to 3738 samples (5-95ms at 39160 Hz)
+ * Delay tap values are now loaded from 4reverbs_input_table.h
  */
-static const uint16_t reverb_delay_taps[] = {
-    0x00c0, 0x00d4, 0x00e6, 0x00fa, 0x014e, 0x015c, 0x010c, 0x012c, 0x0120,
-    0x0434, 0x0448, 0x045a, 0x046e, 0x04c2, 0x04d0, 0x0480, 0x04a0, 0x0494,
-    0x07a8, 0x07bc, 0x07ce, 0x07e2, 0x0836, 0x0844, 0x07f4, 0x0814, 0x0808,
-    0x0b1c, 0x0b30, 0x0b42, 0x0b56, 0x0baa, 0x0bb8, 0x0b68, 0x0b88, 0x0b7c,
-    0x0e9a
-};
-#define NUM_DELAY_TAPS (sizeof(reverb_delay_taps) / sizeof(reverb_delay_taps[0]))
-
-/* Note: delay_access_gprs array removed - using sequential GPR ranges instead */
 
 /* Initialize 4 REVERBS parameters using the input variable table */
 static void init_reverb(es5510_t *dsp, float decay, float predelay_ms, int algorithm) {
@@ -249,9 +239,8 @@ static void init_reverb(es5510_t *dsp, float decay, float predelay_ms, int algor
      */
     reverbs_init_gprs(dsp->gpr, dsp->memincrement);
 
-    /* Set table base addresses - all at 0 so delay lines share memory */
-    dsp->abase = 0x000000;
-    dsp->bbase = 0x000000;
+    /* Table base addresses are now synchronized with dbase in es5510_run_sample().
+     * dbase starts at 0 and decrements each sample; abase/bbase follow. */
     dsp->dbase = 0x000000;
 
     /* Override decay coefficient with user-specified value */
@@ -268,8 +257,8 @@ static void init_reverb(es5510_t *dsp, float decay, float predelay_ms, int algor
     printf("REVERB: decay=%.2f, predelay=%.1f ms, algorithm=%d\n",
            decay, predelay_ms, algorithm);
     printf("  Initialized from 4reverbs_input_table.h\n");
-    printf("  Delay write taps: %d, Delay read taps: %d, Coefficients: %d\n",
-           NUM_DELAY_WRITE_TAPS, NUM_DELAY_READ_TAPS, NUM_COEFFICIENTS);
+    printf("  Delay taps (GPR 0-31): %d, Coefficients: %zu\n",
+           NUM_DELAY_TAPS, NUM_COEFFICIENTS);
     printf("  R123 (wet_mix_left)=0x%06x, R187 (wet_mix_right)=0x%06x\n",
            dsp->gpr[123] & 0xFFFFFF, dsp->gpr[187] & 0xFFFFFF);
 }
