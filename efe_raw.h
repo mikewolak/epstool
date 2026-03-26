@@ -64,7 +64,7 @@ static const uint32_t EPS_SAMPLE_RATES[] = {
 #define EPS_NUM_SAMPLE_RATES 10
 
 /* MIDI note names for root key display */
-static const char *MIDI_NOTE_NAMES[] = {
+static const char *MIDI_NOTE_NAMES[] __attribute__((unused)) = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
 };
 

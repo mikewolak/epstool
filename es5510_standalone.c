@@ -205,6 +205,8 @@ int debug_skip = 0;  /* Trace conditional skip decisions */
 int debug_alu = 0;   /* Trace ALU writes to DOL */
 int debug_ram = 0;   /* Trace RAM write operations */
 int debug_ccr = 0;   /* Trace CCR changes */
+int debug_mul = 0;   /* Trace MUL operations that use DIL */
+int debug_rta = 0;   /* Trace RTA address calculation */
 
 /* Write register - from MAME */
 static void write_reg(es5510_t *dsp, uint8_t reg, int32_t value) {
@@ -223,8 +225,14 @@ static void write_reg(es5510_t *dsp, uint8_t reg, int32_t value) {
         case 237: dsp->ser1l = (value >> 8) & 0xffff; break;
         case 238: dsp->ser2r = (value >> 8) & 0xffff; break;
         case 239: dsp->ser2l = (value >> 8) & 0xffff; break;
-        case 240: dsp->ser3r = (value >> 8) & 0xffff; break;
-        case 241: dsp->ser3l = (value >> 8) & 0xffff; break;
+        case 240:
+            if (debug_alu) printf("  write_reg(R240/ser3r, 0x%06x) -> ser3r=0x%04x\n", value, (value >> 8) & 0xffff);
+            dsp->ser3r = (value >> 8) & 0xffff;
+            break;
+        case 241:
+            if (debug_alu) printf("  write_reg(R241/ser3l, 0x%06x) -> ser3l=0x%04x\n", value, (value >> 8) & 0xffff);
+            dsp->ser3l = (value >> 8) & 0xffff;
+            break;
         case 242: { /* MACL */
             int64_t masked = dsp->machl & ((int64_t)0x00ffffff << 24);
             int64_t shifted = (int64_t)(value & 0x00ffffff) << 0;
@@ -420,7 +428,11 @@ void es5510_run_sample(es5510_t *dsp) {
 
         /* RAM cycle N-2: read data into DIL */
         if (dsp->ram_pp.cycle != RAM_CYCLE_WRITE) {
-            if (!dsp->ram_pp.io) {
+            if (dsp->ram_pp.io) {
+                /* RIO: Read from I/O (serial ports) - not implemented, return 0 */
+                dsp->dil = 0;
+            } else {
+                /* RDL/RTA/RTB/DUMP_FIFO: Read from DRAM */
                 dsp->dil = dsp->dram[dsp->ram_pp.address & ES5510_DRAM_MASK] << 8;
             }
         }
@@ -435,16 +447,25 @@ void es5510_run_sample(es5510_t *dsp) {
         switch (ramControl.access) {
             case RAM_CONTROL_DELAY:
                 /* Delay line: circular buffer using dbase, dlength */
-                /* Note: modulo by dlength (not dlength + memincrement) to match TABLE_A addressing */
+                /* MAME uses (dlength + memincrement) for the modulo */
                 if (dsp->dlength > 0) {
-                    dsp->ram.address = (((dsp->dbase + offset) % dsp->dlength) & dsp->memmask) >> dsp->memshift;
+                    dsp->ram.address = (((dsp->dbase + offset) % (dsp->dlength + dsp->memincrement)) & dsp->memmask) >> dsp->memshift;
                 } else {
                     dsp->ram.address = ((dsp->dbase + offset) & dsp->memmask) >> dsp->memshift;
+                }
+                if (debug_rta && dsp->pc >= 2 && dsp->pc <= 5 && ramControl.cycle == RAM_CYCLE_WRITE) {
+                    printf("  [PC=%d] WDL: dbase=0x%x offset=0x%x addr=0x%x\n",
+                           dsp->pc, dsp->dbase, offset, dsp->ram.address);
                 }
                 break;
             case RAM_CONTROL_TABLE_A:
                 /* Table A: uses abase directly (no circular wrapping) */
                 dsp->ram.address = ((dsp->abase + offset) & dsp->memmask) >> dsp->memshift;
+                if (debug_rta && dsp->pc >= 6 && dsp->pc <= 10) {
+                    printf("  [PC=%d] RTA: abase=0x%x offset=0x%x addr=0x%x DRAM=%d\n",
+                           dsp->pc, dsp->abase, offset, dsp->ram.address,
+                           dsp->dram[dsp->ram.address & ES5510_DRAM_MASK]);
+                }
                 break;
             case RAM_CONTROL_TABLE_B:
                 /* Table B: uses bbase directly (no circular wrapping) */
@@ -485,6 +506,13 @@ void es5510_run_sample(es5510_t *dsp) {
                 dsp->mulacc.result = dsp->mulacc.product;
             }
 
+            /* Debug MUL write */
+            if (debug_mul && dsp->pc >= 9 && dsp->pc <= 13) {
+                printf("  [PC=%d WRITE] cVal=0x%06x dVal=0x%06x prod=%016llx result=%016llx -> MACHL\n",
+                       dsp->pc, dsp->mulacc.cValue & 0xFFFFFF, dsp->mulacc.dValue & 0xFFFFFF,
+                       (unsigned long long)dsp->mulacc.product, (unsigned long long)dsp->mulacc.result);
+            }
+
             if (dsp->mulacc.result < -((int64_t)1 << 47) ||
                 dsp->mulacc.result >= ((int64_t)1 << 47)) {
                 dsp->mac_overflow = true;
@@ -521,10 +549,18 @@ void es5510_run_sample(es5510_t *dsp) {
         }
         dsp->mulacc.dValue = read_reg(dsp, dsp->mulacc.dReg);
 
+        /* Debug MUL operations - trace PC 8-12 in detail */
+        if (debug_mul && dsp->pc >= 8 && dsp->pc <= 12) {
+            printf("  [PC=%d] MUL: src=%d cReg=R%d cVal=0x%06x dReg=R%d dVal=0x%06x skip=%d wr=%d accum=%d MACHL=%016llx\n",
+                   dsp->pc, dsp->mulacc.src, dsp->mulacc.cReg, dsp->mulacc.cValue & 0xFFFFFF,
+                   dsp->mulacc.dReg, dsp->mulacc.dValue & 0xFFFFFF, skip, dsp->mulacc.write_result,
+                   dsp->mulacc.accumulate, (unsigned long long)dsp->machl);
+        }
+
         /* T2, clock high: Write ALU Result N-1 */
-        if (debug_alu && dsp->pc < 5) {
-            printf("    PC=%d: alu.write_result=%d alu.dst=%d alu.aValue=%d alu.bValue=%d\n",
-                   dsp->pc, dsp->alu.write_result, dsp->alu.dst, dsp->alu.aValue, dsp->alu.bValue);
+        if (debug_alu && (dsp->pc < 5 || (dsp->pc >= 91 && dsp->pc <= 115) || (dsp->pc >= 123 && dsp->pc <= 125))) {
+            printf("    PC=%d: alu.write_result=%d alu.dst=%d alu.aReg=R%d alu.aValue=0x%06x alu.bValue=0x%06x\n",
+                   dsp->pc, dsp->alu.write_result, dsp->alu.dst, dsp->alu.aReg, dsp->alu.aValue & 0xFFFFFF, dsp->alu.bValue & 0xFFFFFF);
         }
         if (dsp->alu.write_result) {
             uint8_t flags = dsp->ccr;
@@ -532,6 +568,9 @@ void es5510_run_sample(es5510_t *dsp) {
                                             dsp->alu.aValue, dsp->alu.bValue, &flags);
 
             if (dsp->alu.dst & SRC_DST_REG) {
+                if (debug_alu && dsp->alu.aReg >= 240 && dsp->alu.aReg <= 241) {
+                    printf("    -> write_reg(R%d, 0x%06x) [ser3l/r]\n", dsp->alu.aReg, dsp->alu.result & 0xFFFFFF);
+                }
                 write_reg(dsp, dsp->alu.aReg, dsp->alu.result);
             }
             if (dsp->alu.dst & SRC_DST_DELAY) {

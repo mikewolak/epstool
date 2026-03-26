@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <math.h>
 #include "es5510_standalone.h"
+#include "4reverbs_input_table.h"
 
 /* WAV file header */
 #pragma pack(push, 1)
@@ -234,79 +235,43 @@ static const uint16_t reverb_delay_taps[] = {
 
 /* Note: delay_access_gprs array removed - using sequential GPR ranges instead */
 
-/* Initialize 4 REVERBS parameters */
+/* Initialize 4 REVERBS parameters using the input variable table */
 static void init_reverb(es5510_t *dsp, float decay, float predelay_ms, int algorithm) {
-    /*
-     * Use the same GPR initialization as the working trace test.
-     * The ES5510 microcode uses GPR[PC] as the delay offset for RAM operations.
-     */
-    (void)algorithm;
-    (void)predelay_ms;
+    (void)predelay_ms;  /* TODO: implement predelay using delay tap offsets */
+    (void)algorithm;    /* TODO: implement mode selection via CCR/CMR */
 
     /* Initialize delay memory configuration */
     init_memory(dsp);
 
     /*
-     * Load delay tap offsets into SAFE GPRs only.
-     * GPRs that are written by microcode (computation) must be skipped:
-     * Unsafe: 0-3, 16, 24-27, 50-54, 56, 74-77, 81-94, 96-101, 104-108, etc.
-     * Safe for delay offsets: 4-15, 17-23, 28-49, 55, 57-62
+     * Use the input variable table from 4reverbs_input_table.h
+     * This loads all delay taps, coefficients, and mode registers
      */
-    static const uint8_t safe_gprs[] = {
-        4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-        17, 18, 19, 20, 21, 22, 23,
-        28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
-        55, 57, 58, 59, 60, 61, 62
-    };
-    int num_safe = sizeof(safe_gprs) / sizeof(safe_gprs[0]);
+    reverbs_init_gprs(dsp->gpr, dsp->memincrement);
 
-    for (int i = 0; i < num_safe; i++) {
-        int tap_idx = i % NUM_DELAY_TAPS;
-        int32_t tap_offset = reverb_delay_taps[tap_idx] * dsp->memincrement;
-        es5510_set_gpr(dsp, safe_gprs[i], tap_offset);
-    }
-
-    /* Also safe higher GPRs: skip those used for computation */
-    static const uint8_t safe_high_gprs[] = {
-        95, 102, 103, 109, 110, 115, 116, 118, 119,
-        122, 123, 124, 125, 126, 127, 128, 129, 130,
-        154, 155, 156, 157, 158, 159
-    };
-    int num_safe_high = sizeof(safe_high_gprs) / sizeof(safe_high_gprs[0]);
-    for (int i = 0; i < num_safe_high; i++) {
-        int tap_idx = i % NUM_DELAY_TAPS;
-        int32_t tap_offset = reverb_delay_taps[tap_idx] * dsp->memincrement;
-        es5510_set_gpr(dsp, safe_high_gprs[i], tap_offset);
-    }
-
-    /*
-     * Set table base addresses.
-     * All bases at 0 so delay lines and table reads share the same memory.
-     */
+    /* Set table base addresses - all at 0 so delay lines share memory */
     dsp->abase = 0x000000;
     dsp->bbase = 0x000000;
     dsp->dbase = 0x000000;
 
-    /* Decay coefficient (0.0 - 1.0 range) in Q23 format */
+    /* Override decay coefficient with user-specified value */
     int32_t decay_q23 = (int32_t)(decay * 8388607.0f);
+    es5510_set_gpr(dsp, 117, decay_q23);  /* Main decay (used ~45 times) */
+    es5510_set_gpr(dsp, 121, decay_q23);  /* Secondary decay */
 
-    /*
-     * R117 is the main decay coefficient - used in almost every multiply
-     * R121 is also used for decay in some operations
-     */
-    es5510_set_gpr(dsp, 117, decay_q23);
-    es5510_set_gpr(dsp, 121, decay_q23);
+    /* Override input gain to unity for full input */
+    es5510_set_gpr(dsp, 69, 0x7FFFFF);
 
-    /*
-     * R69 is used at PC 0 for input routing: MUL R69,R3 >DOL
-     * Set to unity gain so input reaches the delay buffer
-     */
-    es5510_set_gpr(dsp, 69, 0x7FFFFF);  /* Unity gain */
+    /* Ensure wet mix is set for output (from input table defaults: 0x740000 = 0.9) */
+    /* R123 feeds ser3l at PC=101-102, R187 adds to ser3l at PC=112 */
 
     printf("REVERB: decay=%.2f, predelay=%.1f ms, algorithm=%d\n",
            decay, predelay_ms, algorithm);
-    printf("  Loaded %d delay taps (range %d-%d samples)\n",
-           (int)NUM_DELAY_TAPS, reverb_delay_taps[0], reverb_delay_taps[NUM_DELAY_TAPS-1]);
+    printf("  Initialized from 4reverbs_input_table.h\n");
+    printf("  Delay write taps: %d, Delay read taps: %d, Coefficients: %d\n",
+           NUM_DELAY_WRITE_TAPS, NUM_DELAY_READ_TAPS, NUM_COEFFICIENTS);
+    printf("  R123 (wet_mix_left)=0x%06x, R187 (wet_mix_right)=0x%06x\n",
+           dsp->gpr[123] & 0xFFFFFF, dsp->gpr[187] & 0xFFFFFF);
 }
 
 void print_usage(const char *prog) {

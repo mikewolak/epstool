@@ -87,7 +87,7 @@ sudo mkdir -p "$MOUNT_POINT"
 
 # Step 5: Mount the device
 echo "Mounting $DEVICE to $MOUNT_POINT..."
-sudo mount "$DEVICE" "$MOUNT_POINT" || error "Failed to mount $DEVICE"
+sudo mount -t exfat "$DEVICE" "$MOUNT_POINT" || error "Failed to mount $DEVICE"
 
 # Step 6: Validate old file exists
 echo "Checking for existing $TARGET_FILE..."
