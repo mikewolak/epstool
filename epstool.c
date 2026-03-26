@@ -40,6 +40,7 @@ static void usage(const char *prog)
 #ifdef HAVE_LIBHXCFE
     fprintf(stderr, "  mkhfe <output.hfe> [--os] [input.efe ...]  - Create HFE floppy from EFE files\n");
     fprintf(stderr, "  extracthfe <input.hfe> <output_dir>        - Extract all files from HFE to EFE\n");
+    fprintf(stderr, "  hfe2img <input.hfe> <output.img>           - Convert HFE floppy to raw IMG\n");
 #endif
     fprintf(stderr, "\nImage operations: %s <image> <command> [args...]\n\n", prog);
     fprintf(stderr, "Commands:\n");
@@ -1188,6 +1189,75 @@ cleanup:
     unlink(tmp_raw);  /* Clean up temp file */
     return result;
 }
+
+/*
+ * Convert an HFE floppy image to a raw sector IMG.
+ *
+ * Useful for feeding the EPS OS disk into emulators that expect
+ * an 800KB raw image rather than HFE.
+ */
+static int cmd_hfe2img(const char *input_hfe, const char *output_img)
+{
+    int result = 1;
+    HXCFE *hxcfe = NULL;
+    HXCFE_IMGLDR *imgldr = NULL;
+    HXCFE_FLOPPY *floppy = NULL;
+
+    printf("Loading HFE file: %s\n", input_hfe);
+
+    hxcfe = hxcfe_init();
+    if (!hxcfe) {
+        fprintf(stderr, "Failed to initialize libhxcfe\n");
+        goto cleanup;
+    }
+
+    imgldr = hxcfe_imgInitLoader(hxcfe);
+    if (!imgldr) {
+        fprintf(stderr, "Failed to initialize image loader\n");
+        goto cleanup;
+    }
+
+    int32_t err_ret;
+    int32_t hfe_loader_id = hxcfe_imgGetLoaderID(imgldr, "HXC_HFE");
+    if (hfe_loader_id < 0) {
+        fprintf(stderr, "HXC_HFE loader not found\n");
+        goto cleanup;
+    }
+
+    floppy = hxcfe_imgLoad(imgldr, (char*)input_hfe, hfe_loader_id, &err_ret);
+    if (!floppy || err_ret != HXCFE_NOERROR) {
+        fprintf(stderr, "Failed to load HFE file: error %d\n", err_ret);
+        goto cleanup;
+    }
+
+    /* Export using RAW_LOADER with explicit Ensoniq geometry (800KB DD) */
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_SECTOR_PER_TRACK", "10");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_NUMBER_OF_TRACK", "80");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_NUMBER_OF_SIDE", "2");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_SECTOR_SIZE", "512");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_FIRSTSECTORID", "0");
+    hxcfe_setEnvVar(hxcfe, "RAWLOADER_TRACKFORMAT", "ISOFORMAT_DD");
+
+    int32_t raw_loader_id = hxcfe_imgGetLoaderID(imgldr, "RAW_LOADER");
+    if (raw_loader_id < 0) {
+        fprintf(stderr, "RAW_LOADER not found\n");
+        goto cleanup;
+    }
+
+    printf("Writing raw image: %s\n", output_img);
+    if (hxcfe_imgExport(imgldr, floppy, (char*)output_img, raw_loader_id) != HXCFE_NOERROR) {
+        fprintf(stderr, "Failed to export raw image\n");
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (floppy && imgldr) hxcfe_imgUnload(imgldr, floppy);
+    if (imgldr) hxcfe_imgDeInitLoader(imgldr);
+    if (hxcfe) hxcfe_deinit(hxcfe);
+    return result;
+}
 #endif /* HAVE_LIBHXCFE */
 
 int main(int argc, char *argv[])
@@ -1260,6 +1330,16 @@ int main(int argc, char *argv[])
             return 1;
         }
         return cmd_extracthfe(argv[2], argv[3]);
+    }
+
+    /* Handle hfe2img - export raw IMG from HFE */
+    if (strcmp(argv[1], "hfe2img") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s hfe2img <input.hfe> <output.img>\n", argv[0]);
+            fprintf(stderr, "  Converts HFE floppy image to raw 800KB IMG\n");
+            return 1;
+        }
+        return cmd_hfe2img(argv[2], argv[3]);
     }
 #endif
 
