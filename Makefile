@@ -3,9 +3,11 @@ CFLAGS = -std=c99 -Wall -Wextra -pedantic -O2
 LDFLAGS =
 
 # HFE support via libhxcfe (enabled by default if libhxcfe/ exists)
-ifneq ($(wildcard libhxcfe/libhxcfe.so),)
+# Optional HxC Floppy Emulator library (Linux .so or macOS .dylib)
+ifneq ($(wildcard libhxcfe/libhxcfe.so libhxcfe/libhxcfe.dylib),)
 CFLAGS += -DHAVE_LIBHXCFE -I./libhxcfe
-LDFLAGS += -L./libhxcfe -lhxcfe -Wl,-rpath,'$$ORIGIN/libhxcfe'
+# Prefer @loader_path rpath for macOS; $ORIGIN works on ELF.
+LDFLAGS += -L./libhxcfe -lhxcfe -Wl,-rpath,'@loader_path/libhxcfe' -Wl,-rpath,'$$ORIGIN/libhxcfe'
 endif
 
 # Core filesystem

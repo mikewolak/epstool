@@ -119,9 +119,12 @@ static int8_t countLowOnes(int32_t x) {
 void es5510_init(es5510_t *dsp) {
     memset(dsp, 0, sizeof(es5510_t));
     dsp->dram = (int16_t *)calloc(ES5510_DRAM_SIZE, sizeof(int16_t));
-    dsp->memsiz = 0x00ffffff;
-    dsp->memincrement = 0x01000000;
-    dsp->memshift = 24;
+    /* Default to 64K-word addressing (memshift=8) which matches most ESP effects
+     * and keeps delay addressing sane. Higher-level loaders can overwrite. */
+    dsp->memsiz = 0x000000ff;
+    dsp->memincrement = 1 << 8;       /* 0x100 */
+    dsp->memshift = 8;
+    dsp->memmask = 0x00ffffff & ~dsp->memsiz;
     dsp->sigreg = 1;
     dsp->mulshift = 1;
     es5510_reset(dsp);
@@ -207,6 +210,9 @@ int debug_ram = 0;   /* Trace RAM write operations */
 int debug_ccr = 0;   /* Trace CCR changes */
 int debug_mul = 0;   /* Trace MUL operations that use DIL */
 int debug_rta = 0;   /* Trace RTA address calculation */
+int debug_memtrace = 0; /* Trace RAM addr calc for key PCs */
+int debug_mac = 0;      /* Trace MAC accumulator updates */
+int debug_trace_samples = 0; /* Number of samples to trace */
 
 /* Write register - from MAME */
 static void write_reg(es5510_t *dsp, uint8_t reg, int32_t value) {
@@ -415,16 +421,13 @@ void es5510_get_serial_output(es5510_t *dsp, int16_t *left, int16_t *right) {
 
 /* Run one sample through the DSP - main emulation loop from MAME */
 void es5510_run_sample(es5510_t *dsp) {
+    bool trace_sample = false;
+    if (debug_trace_samples > 0) {
+        trace_sample = true;
+        --debug_trace_samples;
+    }
     dsp->pc = 0;
     dsp->running = true;
-
-    /*
-     * Synchronize table bases with delay line base at start of sample.
-     * This allows RTA/RTB to read from the same circular buffer as RDL/WDL.
-     * The delay tap GPRs contain offsets in samples * memincrement.
-     */
-    dsp->abase = dsp->dbase;
-    dsp->bbase = dsp->dbase;
 
     while (dsp->running && dsp->pc < 160) {
         /* Pipeline state */
@@ -461,14 +464,26 @@ void es5510_run_sample(es5510_t *dsp) {
                 } else {
                     dsp->ram.address = ((dsp->dbase + offset) & dsp->memmask) >> dsp->memshift;
                 }
+                if (trace_sample && debug_memtrace && ((dsp->pc >= 2 && dsp->pc <= 5) || (dsp->pc >= 57 && dsp->pc <= 68))) {
+                    printf("  [PC=%d] MEM delay: dbase=0x%x offset=0x%x addr=0x%x cycle=%d\n",
+                           dsp->pc, dsp->dbase, offset, dsp->ram.address, ramControl.cycle);
+                }
                 if (debug_rta && dsp->pc >= 2 && dsp->pc <= 5 && ramControl.cycle == RAM_CYCLE_WRITE) {
                     printf("  [PC=%d] WDL: dbase=0x%x offset=0x%x addr=0x%x\n",
                            dsp->pc, dsp->dbase, offset, dsp->ram.address);
                 }
                 break;
             case RAM_CONTROL_TABLE_A:
-                /* Table A: uses abase directly (no circular wrapping) */
-                dsp->ram.address = ((dsp->abase + offset) & dsp->memmask) >> dsp->memshift;
+                /* HACK: Treat Table A accesses as delay-line reads (dbase-relative) so large tap offsets hit the written delay buffer */
+                if (dsp->dlength > 0) {
+                    dsp->ram.address = (((dsp->dbase + offset) % (dsp->dlength + dsp->memincrement)) & dsp->memmask) >> dsp->memshift;
+                } else {
+                    dsp->ram.address = ((dsp->dbase + offset) & dsp->memmask) >> dsp->memshift;
+                }
+                if (trace_sample && debug_memtrace && ((dsp->pc >= 6 && dsp->pc <= 27) || (dsp->pc >= 90 && dsp->pc <= 146))) {
+                    printf("  [PC=%d] MEM tableA: abase=0x%x offset=0x%x addr=0x%x cycle=%d\n",
+                           dsp->pc, dsp->abase, offset, dsp->ram.address, ramControl.cycle);
+                }
                 if (debug_rta && dsp->pc >= 6 && dsp->pc <= 10) {
                     printf("  [PC=%d] RTA: abase=0x%x offset=0x%x addr=0x%x DRAM=%d\n",
                            dsp->pc, dsp->abase, offset, dsp->ram.address,
@@ -476,8 +491,8 @@ void es5510_run_sample(es5510_t *dsp) {
                 }
                 break;
             case RAM_CONTROL_TABLE_B:
-                /* Table B: uses bbase directly (no circular wrapping) */
-                dsp->ram.address = ((dsp->bbase + offset) & dsp->memmask) >> dsp->memshift;
+                /* Table B: base+offset, no MEMSIZ masking, no wrapping */
+                dsp->ram.address = ((dsp->bbase + offset) >> dsp->memshift) & ES5510_DRAM_MASK;
                 break;
             case RAM_CONTROL_IO:
                 dsp->ram.address = offset & 0x00fffff0;
@@ -519,6 +534,13 @@ void es5510_run_sample(es5510_t *dsp) {
                 printf("  [PC=%d WRITE] cVal=0x%06x dVal=0x%06x prod=%016llx result=%016llx -> MACHL\n",
                        dsp->pc, dsp->mulacc.cValue & 0xFFFFFF, dsp->mulacc.dValue & 0xFFFFFF,
                        (unsigned long long)dsp->mulacc.product, (unsigned long long)dsp->mulacc.result);
+            }
+            if (trace_sample && debug_mac && dsp->pc >= 80 && dsp->pc <= 90) {
+                printf("  [PC=%d MACWRITE] accum=%d cReg=R%d dReg=R%d cVal=0x%06x dVal=0x%06x product=%016llx result=%016llx machl_prev=%016llx\n",
+                       dsp->pc, dsp->mulacc.accumulate, dsp->mulacc.cReg, dsp->mulacc.dReg,
+                       dsp->mulacc.cValue & 0xFFFFFF, dsp->mulacc.dValue & 0xFFFFFF,
+                       (unsigned long long)dsp->mulacc.product, (unsigned long long)dsp->mulacc.result,
+                       (unsigned long long)dsp->machl);
             }
 
             if (dsp->mulacc.result < -((int64_t)1 << 47) ||

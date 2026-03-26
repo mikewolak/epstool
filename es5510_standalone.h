@@ -160,6 +160,11 @@ extern int debug_skip;
 extern int debug_alu;
 extern int debug_ram;
 extern int debug_ccr;
+extern int debug_mul;
+extern int debug_rta;
+extern int debug_memtrace;
+extern int debug_mac;
+extern int debug_trace_samples;
 
 /* Function prototypes */
 void es5510_init(es5510_t *dsp);
